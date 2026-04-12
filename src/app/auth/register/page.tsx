@@ -26,7 +26,11 @@ export default function RegisterPage() {
   const handleInputChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }));
     if (errors[field]) {
-      setErrors((prev) => ({ ...prev, [field]: undefined }));
+      setErrors((prev) => {
+        const newErrors = { ...prev };
+        delete newErrors[field];
+        return newErrors;
+      });
     }
   };
 
@@ -155,7 +159,7 @@ export default function RegisterPage() {
             onChange={(e) => {
               setAgreeTerms(e.target.checked);
               if (errors.terms) {
-                setErrors((prev) => ({ ...prev, terms: undefined }));
+                setErrors((prev) => ({ ...prev, terms: '' }));
               }
             }}
             error={errors.terms}

@@ -14,7 +14,15 @@ import {
 } from 'lucide-react';
 
 interface SidebarProps {
-  active?: 'home' | 'transactions' | 'mesin' | 'analisa' | 'ajukan' | 'account';
+  active?:
+    | 'home'
+    | 'transactions'
+    | 'mesin'
+    | 'analisa'
+    | 'ajukan'
+    | 'account'
+    | 'notifications'
+    | 'partners';
 }
 
 export default function Sidebar({ active = 'home' }: SidebarProps) {

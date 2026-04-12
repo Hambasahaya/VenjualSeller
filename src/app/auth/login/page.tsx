@@ -64,7 +64,7 @@ export default function LoginPage() {
           onChange={(e) => {
             setEmail(e.target.value);
             if (errors.email) {
-              setErrors({ ...errors, email: undefined });
+              setErrors({ ...errors, email: '' });
             }
           }}
           placeholder="partner@venjual.com"
@@ -76,7 +76,7 @@ export default function LoginPage() {
           onChange={(e) => {
             setPassword(e.target.value);
             if (errors.password) {
-              setErrors({ ...errors, password: undefined });
+              setErrors({ ...errors, password: '' });
             }
           }}
           placeholder="Masukkan password"

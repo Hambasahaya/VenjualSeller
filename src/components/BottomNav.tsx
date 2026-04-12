@@ -14,7 +14,15 @@ import {
 } from 'lucide-react';
 
 interface BottomNavProps {
-  active?: 'home' | 'transactions' | 'mesin' | 'analisa' | 'ajukan';
+  active?:
+    | 'home'
+    | 'transactions'
+    | 'mesin'
+    | 'analisa'
+    | 'ajukan'
+    | 'account'
+    | 'notifications'
+    | 'partners';
 }
 
 export default function BottomNav({ active = 'home' }: BottomNavProps) {

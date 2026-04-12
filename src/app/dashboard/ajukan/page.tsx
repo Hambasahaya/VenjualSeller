@@ -18,9 +18,9 @@ interface FormData {
   withdrawalAmount: string;
   uploadedFile: File | null;
   // For upgrade machine
-  existingMachineId?: string;
-  upgradePurpose?: string;
-  currentCondition?: string;
+  existingMachineId: string;
+  upgradePurpose: string;
+  currentCondition: string;
 }
 
 export default function AjukanPage() {

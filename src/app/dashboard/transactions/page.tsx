@@ -31,7 +31,8 @@ ChartJS.register(
 
 export default function TransactionsPage() {
   const [selectedDate, setSelectedDate] = useState('2026-04-12');
-  const [filters, setFilters] = useState({
+  type FilterKey = 'semua' | 'vending' | 'laundry' | 'space';
+  const [filters, setFilters] = useState<Record<FilterKey, boolean>>({
     semua: true,
     vending: false,
     laundry: false,
@@ -139,7 +140,7 @@ export default function TransactionsPage() {
     },
   };
 
-  const handleFilterChange = (key: string) => {
+  const handleFilterChange = (key: FilterKey) => {
     if (key === 'semua') {
       setFilters({
         semua: !filters.semua,

@@ -99,7 +99,7 @@ export default function ResetPasswordPage() {
           onChange={(e) => {
             setPassword(e.target.value);
             if (errors.password) {
-              setErrors((prev) => ({ ...prev, password: undefined }));
+              setErrors((prev) => ({ ...prev, password: '' }));
             }
           }}
           error={errors.password}
@@ -112,7 +112,7 @@ export default function ResetPasswordPage() {
           onChange={(e) => {
             setConfirmPassword(e.target.value);
             if (errors.confirmPassword) {
-              setErrors((prev) => ({ ...prev, confirmPassword: undefined }));
+              setErrors((prev) => ({ ...prev, confirmPassword: '' }));
             }
           }}
           error={errors.confirmPassword}
