@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import AuthLayout from '@/components/AuthLayout';
 import EmailInput from '@/components/EmailInput';
 import PasswordInput from '@/components/PasswordInput';
@@ -9,8 +10,11 @@ import TextInput from '@/components/TextInput';
 import Checkbox from '@/components/Checkbox';
 import Button from '@/components/Button';
 import { User, Building2 } from 'lucide-react';
+import { registerUser, ApiError } from '@/lib/services';
+import { PASSWORD_POLICY_MESSAGE, validatePasswordPolicy } from '@/lib/password-policy';
 
 export default function RegisterPage() {
+  const router = useRouter();
   const [formData, setFormData] = useState({
     fullName: '',
     businessName: '',
@@ -52,11 +56,16 @@ export default function RegisterPage() {
       newErrors.phone = 'Phone number is required';
     }
     if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 8) {
-      newErrors.password = 'Password must be at least 8 characters';
+      newErrors.password = 'Password wajib diisi';
+    } else {
+      const passwordError = validatePasswordPolicy(formData.password);
+      if (passwordError) {
+        newErrors.password = passwordError;
+      }
     }
-    if (formData.password !== formData.confirmPassword) {
+    if (!formData.confirmPassword) {
+      newErrors.confirmPassword = 'Konfirmasi password wajib diisi';
+    } else if (formData.password !== formData.confirmPassword) {
       newErrors.confirmPassword = 'Passwords do not match';
     }
     if (!agreeTerms) {
@@ -76,10 +85,23 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      console.log(formData);
+      // Call register API
+      await registerUser({
+        username: formData.email.split('@')[0], // Use email prefix as username
+        email: formData.email,
+        password: formData.password,
+        full_name: formData.fullName,
+        phone: formData.phone,
+      });
+      
+      // Store email for verify-email page
+      localStorage.setItem('pending_email', formData.email);
+      
       // Redirect to verify email
+      router.push(`/auth/verify-email?email=${encodeURIComponent(formData.email)}`);
+    } catch (error) {
+      const apiError = error as ApiError;
+      setErrors({ api: apiError.message });
     } finally {
       setLoading(false);
     }
@@ -101,6 +123,13 @@ export default function RegisterPage() {
         <h2 className="text-lg font-semibold text-gray-900 mb-6">
           Buat Akun Baru
         </h2>
+
+        {/* API Error Message */}
+        {errors.api && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {errors.api}
+          </div>
+        )}
 
         <TextInput
           label="Nama Lengkap"
@@ -143,6 +172,10 @@ export default function RegisterPage() {
           onChange={(e) => handleInputChange('password', e.target.value)}
           error={errors.password}
         />
+
+        <p className="text-xs text-gray-500 -mt-2">
+          {PASSWORD_POLICY_MESSAGE}
+        </p>
 
         <PasswordInput
           label="Konfirmasi Password"

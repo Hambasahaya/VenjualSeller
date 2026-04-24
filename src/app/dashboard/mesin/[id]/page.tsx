@@ -1,15 +1,40 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, Edit2, AlertCircle, Wifi, Video, Zap, Copy } from 'lucide-react';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import Sidebar from '@/components/Sidebar';
+import { resolveCommissionDetails } from '@/lib/commission';
+import {
+  Channel as ApiChannel,
+  Product as ApiProduct,
+  createPartnerMachineProduct,
+  deletePartnerMachineProduct,
+  getChannels,
+  getCurrentMerchantRealtimeTransactions,
+  getCurrentMerchantTransactions,
+  getCurrentPartnerMachineTransactions,
+  getMachine,
+  getPartnerId,
+  getPartnerMachineProducts,
+  getProducts,
+  normalizeApiError,
+  updateProduct,
+  updatePartnerMachineProduct,
+  updateChannel,
+  updateCurrentWiFiSettings,
+  Machine as ApiMachine,
+} from '@/lib/services';
 
 interface MachineDetail {
+  apiId?: number;
   id: string;
-  type: 'vending' | 'laundry' | 'space';
+  type: 'vending' | 'locker';
+  machineTypeCode?: string;
+  machineSerialNumber?: string;
+  machineTypeLabel: string;
   name: string;
   location: string;
   address: string;
@@ -28,55 +53,367 @@ interface MachineDetail {
   products: number;
 }
 
-// Mock machine data
-const machineDetails: Record<string, MachineDetail> = {
-  'VM-JKT-001': {
-    id: 'VM-JKT-001',
-    type: 'vending',
-    name: 'Reguler Vending Machine',
-    location: 'Mall Central Park Lt. 1',
-    address: 'Latien S. Parman, Jakarta Barat',
-    dailyEarning: 'Rp 450.000',
-    commission: '20%',
-    commissionAmount: 'Rp 90.000',
-    transactions: 32,
-    capacity: 60,
-    utilities: 73,
-    status: 'Aktif',
-    installationDate: '15 Des. 2025',
-    commissionPercentage: '20',
-    cctvStatus: 'Terpasang',
-    machineHours: '16/16 Channel',
-    channels: 3,
-    products: 18,
-  },
-  'VM-JKT-002': {
-    id: 'VM-JKT-002',
-    type: 'vending',
-    name: 'Premium Vending Machine',
-    location: 'Gedung Perkantoran Sudirman',
-    address: 'Jl. Sudirman, Jakarta Pusat',
-    dailyEarning: 'Rp 380.000',
-    commission: '10%',
-    commissionAmount: 'Rp 38.000',
-    transactions: 28,
-    capacity: 60,
-    utilities: 65,
-    status: 'Aktif',
-    installationDate: '10 Okt. 2025',
-    commissionPercentage: '10',
-    cctvStatus: 'Tidak Terpasang',
-    machineHours: '14/16 Channel',
-    channels: 2,
-    products: 15,
-  },
+interface ControllerConfig {
+  id: number;
+  name: string;
+  capacity: string;
+  channelUsed: number;
+  channelTotal: number;
+}
+
+interface ChannelConfig {
+  id: number;
+  controllerId: number;
+  jenisMesin?: string;
+  machineTypeCode?: string;
+  machineSerialNumber?: string;
+  name: string;
+  type: string;
+  productId?: number;
+  product: string;
+  capacity: number;
+  stock: number;
+  status: boolean;
+  spiralDiameter: string;
+  traySize: string;
+  doorSize: string;
+}
+
+interface ProductConfig {
+  id: number;
+  code: string;
+  name: string;
+  price: number;
+  image: string;
+  category: string;
+  tag: string;
+  stock: number;
+  status: string;
+}
+
+type MachineTransactionMetrics = {
+  amount: number;
+  count: number;
 };
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function normalizeMachineType(type: string | undefined): MachineDetail['type'] {
+  const normalizedType = normalizeMachineTypeKey(type);
+
+  if (normalizedType === 'vmj' || normalizedType === 'vending') {
+    return 'vending';
+  }
+
+  if (
+    normalizedType === 'sls' ||
+    normalizedType === 'laundry' ||
+    normalizedType === 'loundry' ||
+    normalizedType === 'space' ||
+    normalizedType === 'locker' ||
+    isLockerLaundryType(type)
+  ) {
+    return 'locker';
+  }
+
+  return 'vending';
+}
+
+function normalizeMachineTypeKey(type: string | undefined) {
+  return type?.toLowerCase().replace(/[\s_-]/g, '');
+}
+
+function isLockerLaundryType(type: string | undefined) {
+  const normalizedType = normalizeMachineTypeKey(type);
+  return normalizedType === 'lockerlaundry' || normalizedType === 'lockerloundry';
+}
+
+function shouldHideDoorSizeField(
+  machineTypeCode?: string,
+  machineSerialNumber?: string
+): boolean {
+  const normalizedTypeCode = machineTypeCode?.trim().toUpperCase() ?? '';
+  const normalizedSerial = machineSerialNumber?.trim().toUpperCase() ?? '';
+
+  return normalizedTypeCode === 'VENDING' || normalizedSerial.startsWith('VJ');
+}
+
+function getMachineTypeValue(machine: ApiMachine) {
+  return (
+    machine.machine_type_code ||
+    machine.mechine_type_code ||
+    machine.machine_type ||
+    machine.mechine_type ||
+    machine.type
+  );
+}
+
+function formatMachineTypeLabel(type: string | undefined) {
+  const normalizedType = normalizeMachineTypeKey(type);
+
+  if (normalizedType === 'vmj' || normalizedType === 'vending') {
+    return 'Vending Machine';
+  }
+
+  if (
+    normalizedType === 'sls' ||
+    normalizedType === 'laundry' ||
+    normalizedType === 'loundry' ||
+    normalizedType === 'space' ||
+    normalizedType === 'locker' ||
+    isLockerLaundryType(type)
+  ) {
+    return 'Locker Laundry';
+  }
+
+  return type || 'Mesin Venjual';
+}
+
+function normalizeStatus(status: string | undefined): MachineDetail['status'] {
+  const normalizedStatus = status?.toLowerCase();
+
+  if (normalizedStatus === 'maintenance') {
+    return 'Maintenance';
+  }
+
+  if (normalizedStatus === 'inactive' || normalizedStatus === 'nonactive') {
+    return 'Inactive';
+  }
+
+  return 'Aktif';
+}
+
+function formatDate(value: string | undefined) {
+  if (!value) {
+    return '-';
+  }
+
+  return new Date(value).toLocaleDateString('id-ID', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function mapApiMachine(
+  machine: ApiMachine,
+  metrics?: MachineTransactionMetrics
+): MachineDetail {
+  const dailyEarning = metrics?.amount ?? machine.daily_earning ?? 0;
+  const { percentage: commissionPercentage, amount: commissionAmount } =
+    resolveCommissionDetails(
+      dailyEarning,
+      machine.commission_percentage,
+      machine.commission_amount
+    );
+  const channelCount = machine.channels ?? 0;
+  const machineTypeValue = getMachineTypeValue(machine);
+
+  return {
+    apiId: typeof machine.id === 'number' ? machine.id : toNumber(machine.id),
+    id: String(machine.machine_id ?? machine.id),
+    type: normalizeMachineType(machineTypeValue),
+    machineTypeCode: machineTypeValue,
+    machineSerialNumber:
+      machine.machine_serial_number ??
+      machine.machineSerialNumber ??
+      machine.serial_number ??
+      machine.serialNumber,
+    machineTypeLabel: formatMachineTypeLabel(machineTypeValue),
+    name: machine.name || 'Mesin Venjual',
+    location: machine.location_name || machine.location || '-',
+    address: machine.address || '-',
+    dailyEarning: formatCurrency(dailyEarning),
+    commission: `${commissionPercentage}%`,
+    commissionAmount: formatCurrency(commissionAmount),
+    transactions: metrics?.count ?? machine.transaction_count ?? 0,
+    capacity: machine.capacity ?? 0,
+    utilities: machine.utilities ?? 0,
+    status: normalizeStatus(machine.status),
+    installationDate: formatDate(machine.installation_date || machine.created_at),
+    commissionPercentage: String(commissionPercentage),
+    cctvStatus: machine.cctv_status || '-',
+    machineHours: `${channelCount}/${channelCount} Channel`,
+    channels: channelCount,
+    products: machine.products ?? 0,
+  };
+}
+
+function toOptionalNumber(value: string | number | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string' && /^\d+$/.test(value)) {
+    return Number(value);
+  }
+
+  return undefined;
+}
+
+function toNumber(value: unknown, fallback = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsedValue = Number(value);
+    return Number.isFinite(parsedValue) ? parsedValue : fallback;
+  }
+
+  return fallback;
+}
+
+async function getMachineTransactionMetrics(
+  machineId: string | number
+): Promise<MachineTransactionMetrics> {
+  try {
+    const summary = await getCurrentMerchantRealtimeTransactions({
+      machine_id: machineId,
+      status: 'PAID',
+    });
+
+    return {
+      amount: summary.total_amount,
+      count: summary.total_transactions,
+    };
+  } catch {
+    // Fallback to listing below when realtime summary is unavailable.
+  }
+
+  try {
+    const response = await getCurrentMerchantTransactions({
+      machine_id: machineId,
+      status: 'PAID',
+      limit: 100,
+      offset: 0,
+    });
+
+    return {
+      amount: response.data.reduce((sum, tx) => sum + toNumber(tx.amount), 0),
+      count: response.data.length,
+    };
+  } catch {
+    // Fallback to partner machine transaction endpoint below.
+  }
+
+  try {
+    const response = await getCurrentPartnerMachineTransactions(machineId, {
+      status: 'PAID',
+      limit: 100,
+      offset: 0,
+    });
+
+    return {
+      amount: response.data.reduce((sum, tx) => sum + toNumber(tx.amount), 0),
+      count: response.data.length,
+    };
+  } catch {
+    return { amount: 0, count: 0 };
+  }
+}
+
+function mapApiProduct(product: ApiProduct): ProductConfig {
+  return {
+    id: product.id,
+    code: product.code || product.sku || `P-${product.id}`,
+    name: product.name,
+    price: toNumber(product.default_price ?? product.price),
+    image:
+      product.image_url ||
+      product.image ||
+      'https://images.unsplash.com/photo-1535950202760-b8b3e78bb8db?w=150&h=150&fit=crop',
+    category: product.category || 'Produk',
+    tag: product.tag || product.sku || '-',
+    stock: toNumber(product.stock),
+    status: product.status || 'Y',
+  };
+}
+
+function buildProductCode(name: string, nextId: number) {
+  const slug = name
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 12);
+
+  return `${slug || 'P'}-${String(nextId).padStart(3, '0')}`;
+}
+
+function getChannelTrayType(channel: ApiChannel) {
+  if (channel.tray_type) {
+    return channel.tray_type.includes(' - ')
+      ? channel.tray_type
+      : `Tray - ${channel.tray_type}`;
+  }
+
+  return 'Tray - Spiral';
+}
+
+function mapApiChannel(channel: ApiChannel): ChannelConfig {
+  const productName =
+    channel.product?.name ||
+    channel.product_name ||
+    channel.productName ||
+    'Belum ada produk';
+
+  return {
+    id: channel.id,
+    controllerId: channel.controller_id ?? 1,    
+    jenisMesin: channel.jenis_mesin,
+    machineTypeCode: channel.machine_type_code,
+    machineSerialNumber: channel.machine_serial_number ?? channel.machineSerialNumber,
+    name: channel.tray_label || channel.name || `Channel ${channel.id}`,
+    type: channel.function || getChannelTrayType(channel),
+    productId: channel.product_id ?? channel.product?.id,
+    product: productName,
+    capacity: toNumber(channel.capacity),
+    stock: toNumber(channel.stock ?? channel.product?.stock),
+    status:
+      channel.is_active ??
+      (channel.active === true ||
+        channel.active === 'true' ||
+        channel.status_now === 'ON'),
+    spiralDiameter: channel.spiral_diameter || '',
+    traySize: channel.tray_size || '',
+    doorSize: channel.door_size || '',
+  };
+}
+
+function buildControllersFromChannels(channels: ChannelConfig[]): ControllerConfig[] {
+  const controllerIds = Array.from(
+    new Set(channels.map((channel) => channel.controllerId))
+  ).sort((a, b) => a - b);
+
+  return controllerIds.map((controllerId) => {
+    const controllerChannels = channels.filter(
+      (channel) => channel.controllerId === controllerId
+    );
+    const channelTotal = Math.max(controllerChannels.length, 16);
+
+    return {
+      id: controllerId,
+      name: `Controller ${controllerId}`,
+      capacity: `${channelTotal} channel`,
+      channelUsed: controllerChannels.length,
+      channelTotal,
+    };
+  });
+}
+
 
 export default function MachineDetailPage() {
   const params = useParams();
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'info' | 'setting' | 'produk' | 'aku'>('info');
-  const [activeSettingTab, setActiveSettingTab] = useState<'koneksi' | 'gambar' | 'controller' | 'channel'>('koneksi');
+  const [activeSettingTab, setActiveSettingTab] = useState<'koneksi' | 'gambar' | 'channel'>('koneksi');
   const [wifiEnabled, setWifiEnabled] = useState(true);
   const [wifiSSID, setWifiSSID] = useState('VendingMachine1');
   const [wifiPassword, setWifiPassword] = useState('Password WiFi');
@@ -84,11 +421,32 @@ export default function MachineDetailPage() {
   const [showAddChannelModal, setShowAddChannelModal] = useState(false);
   const [selectedControllerId, setSelectedControllerId] = useState<number | null>(null);
   const [isMounted, setIsMounted] = useState(false);
+  const [apiMachine, setApiMachine] = useState<MachineDetail | null>(null);
+  const [machineLoading, setMachineLoading] = useState(true);
+  const [machineError, setMachineError] = useState('');
+  const [wifiSubmitting, setWifiSubmitting] = useState(false);
+  const [wifiMessage, setWifiMessage] = useState('');
+  const [channelSubmitting, setChannelSubmitting] = useState(false);
+  const [channelLoading, setChannelLoading] = useState(true);
+  const [channelMessage, setChannelMessage] = useState('');
+  const [productSubmitting, setProductSubmitting] = useState(false);
+  const [productStockSubmitting, setProductStockSubmitting] = useState<Record<number, boolean>>(
+    {}
+  );
+  const [productLoading, setProductLoading] = useState(true);
+  const [productMessage, setProductMessage] = useState('');
   const [showEditChannelModal, setShowEditChannelModal] = useState(false);
-  const [editingChannel, setEditingChannel] = useState<any>(null);
+  const [editingChannel, setEditingChannel] = useState<ChannelConfig | null>(null);
+  const [showConfigureControllerModal, setShowConfigureControllerModal] = useState(false);
+  const [configuringController, setConfiguringController] = useState<ControllerConfig | null>(null);
   const [editChannelForm, setEditChannelForm] = useState({
     type: '',
     capacity: '',
+    productId: '',
+    product: '',
+    spiralDiameter: '',
+    traySize: '',
+    doorSize: '',
   });
   const [showAddProductModal, setShowAddProductModal] = useState(false);
   const [newProductForm, setNewProductForm] = useState({
@@ -99,7 +457,7 @@ export default function MachineDetailPage() {
     supplier: '',
   });
   const [showEditProductModal, setShowEditProductModal] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<any>(null);
+  const [editingProduct, setEditingProduct] = useState<ProductConfig | null>(null);
   const [editProductForm, setEditProductForm] = useState({
     name: '',
     price: '',
@@ -109,149 +467,9 @@ export default function MachineDetailPage() {
   const [machineImageUrl, setMachineImageUrl] = useState(
     'https://images.unsplash.com/photo-1753863474-dfc2508b5bab?w=500&h=400&fit=crop'
   );
-  const [controllers, setControllers] = useState([
-    {
-      id: 1,
-      name: 'Controller 1',
-      capacity: '16 channel',
-      channelUsed: 16,
-      channelTotal: 16,
-    },
-    {
-      id: 2,
-      name: 'Controller 2',
-      capacity: '16 channel',
-      channelUsed: 16,
-      channelTotal: 16,
-    },
-    {
-      id: 3,
-      name: 'Controller 3',
-      capacity: '16 channel',
-      channelUsed: 12,
-      channelTotal: 16,
-    },
-  ]);
-
-  const [channels, setChannels] = useState([
-    {
-      id: 1,
-      controllerId: 1,
-      name: 'Channel 1',
-      type: 'Tray - Spiral',
-      product: 'Air Mineral 600ml',
-      capacity: 25,
-      stock: 18,
-      status: true,
-    },
-    {
-      id: 2,
-      controllerId: 1,
-      name: 'Channel 2',
-      type: 'Tray - Spiral',
-      product: 'Teh Botol Sosro',
-      capacity: 25,
-      stock: 15,
-      status: true,
-    },
-    {
-      id: 3,
-      controllerId: 1,
-      name: 'Channel 3',
-      type: 'Tray - Spiral',
-      product: 'Coca Cola 330ml',
-      capacity: 25,
-      stock: 12,
-      status: true,
-    },
-    {
-      id: 4,
-      controllerId: 1,
-      name: 'Channel 4',
-      type: 'Tray - Spiral',
-      product: 'Fanta Orange',
-      capacity: 25,
-      stock: 20,
-      status: true,
-    },
-    {
-      id: 5,
-      controllerId: 1,
-      name: 'Channel 5',
-      type: 'Tray - Spiral',
-      product: 'Sprite 330ml',
-      capacity: 25,
-      stock: 16,
-      status: true,
-    },
-    {
-      id: 6,
-      controllerId: 1,
-      name: 'Channel 6',
-      type: 'Tray - Spiral',
-      product: 'Pocari Sweat',
-      capacity: 25,
-      stock: 14,
-      status: true,
-    },
-  ]);
-
-  const [products, setProducts] = useState([
-    {
-      id: 1,
-      name: 'Air Mineral 600ml',
-      price: 5000,
-      image: 'https://images.unsplash.com/photo-1535950202760-b8b3e78bb8db?w=150&h=150&fit=crop',
-      category: 'Minuman',
-      tag: 'Aqua',
-      stock: 100,
-    },
-    {
-      id: 2,
-      name: 'Teh Botol Sosro',
-      price: 6000,
-      image: 'https://images.unsplash.com/photo-1554688573-e32b59fd2b17?w=150&h=150&fit=crop',
-      category: 'Minuman',
-      tag: 'Sosro',
-      stock: 80,
-    },
-    {
-      id: 3,
-      name: 'Coca Cola 330ml',
-      price: 7000,
-      image: 'https://images.unsplash.com/photo-1554866585-f91c7f91b9d2?w=150&h=150&fit=crop',
-      category: 'Minuman',
-      tag: 'Cola',
-      stock: 65,
-    },
-    {
-      id: 4,
-      name: 'Fanta Orange',
-      price: 6500,
-      image: 'https://images.unsplash.com/photo-1535952514142-5d1d3c46a3a5?w=150&h=150&fit=crop',
-      category: 'Minuman',
-      tag: 'Fanta',
-      stock: 72,
-    },
-    {
-      id: 5,
-      name: 'Sprite 330ml',
-      price: 6500,
-      image: 'https://images.unsplash.com/photo-1535945675385-6b8c3b5c8b5c?w=150&h=150&fit=crop',
-      category: 'Minuman',
-      tag: 'Sprite',
-      stock: 55,
-    },
-    {
-      id: 6,
-      name: 'Pocari Sweat',
-      price: 7500,
-      image: 'https://images.unsplash.com/photo-1532634726-8021309a91d1?w=150&h=150&fit=crop',
-      category: 'Minuman',
-      tag: 'Sweat',
-      stock: 48,
-    },
-  ]);
+  const [controllers, setControllers] = useState<ControllerConfig[]>([]);
+  const [channels, setChannels] = useState<ChannelConfig[]>([]);
+  const [products, setProducts] = useState<ProductConfig[]>([]);
 
   const getProgressBarColor = (used: number, total: number) => {
     const percentage = (used / total) * 100;
@@ -281,76 +499,282 @@ export default function MachineDetailPage() {
       controllerId: newControllerId,
       name: `Channel 1`,
       type: 'Tray - Spiral',
+      productId: undefined,
       product: 'Produk Baru',
       capacity: 25,
       stock: 0,
       status: true,
+      spiralDiameter: '6mm',
+      traySize: 'A',
+      doorSize: 'Standard',
     };
     setChannels([...channels, newChannel]);
 
     setShowAddChannelModal(false);
   };
 
-  const handleEditChannel = (channel: any) => {
+  const handleEditChannel = (channel: ChannelConfig) => {
     setEditingChannel(channel);
+    setChannelMessage('');
     setEditChannelForm({
       type: channel.type.split(' - ')[1] || 'Spiral',
       capacity: channel.capacity.toString(),
+      productId: channel.productId?.toString() || '',
+      product: channel.product || '',
+      spiralDiameter: channel.spiralDiameter || '',
+      traySize: channel.traySize || '',
+      doorSize: channel.doorSize || '',
     });
     setShowEditChannelModal(true);
   };
 
-  const handleSaveChannel = () => {
-    if (editingChannel) {
-      const updatedChannels = channels.map((ch) =>
-        ch.id === editingChannel.id
-          ? {
-              ...ch,
-              type: `Tray - ${editChannelForm.type}`,
-              capacity: parseInt(editChannelForm.capacity) || ch.capacity,
-            }
-          : ch
+  const handleSaveChannel = async () => {
+    if (!editingChannel) {
+      return;
+    }
+
+    const hideDoorSize =
+      isVendingMachine ||
+      shouldHideDoorSizeField(
+        editingChannel.machineTypeCode ?? apiMachine?.machineTypeCode,
+        editingChannel.machineSerialNumber ?? apiMachine?.machineSerialNumber
       );
-      setChannels(updatedChannels);
+    const selectedProduct = products.find(
+      (product) => product.id === Number(editChannelForm.productId)
+    );
+    const capacity = parseInt(editChannelForm.capacity, 10);
+    const updatedChannel: ChannelConfig = {
+      ...editingChannel,
+      type: isVendingMachine
+        ? `Tray - ${editChannelForm.type || 'Spiral'}`
+        : editingChannel.type,
+      capacity:
+        isVendingMachine && Number.isFinite(capacity)
+          ? capacity
+          : editingChannel.capacity,
+      productId: isVendingMachine ? selectedProduct?.id : editingChannel.productId,
+      product: isVendingMachine
+        ? selectedProduct?.name || editChannelForm.product || editingChannel.product
+        : editingChannel.product,
+      spiralDiameter:
+        editChannelForm.spiralDiameter || editingChannel.spiralDiameter,
+      traySize: editChannelForm.traySize || editingChannel.traySize,
+      doorSize: editChannelForm.doorSize || editingChannel.doorSize,
+    };
+
+    try {
+      setChannelSubmitting(true);
+      setChannelMessage('');
+      if (!machineRequestId) {
+        setChannelMessage('ID mesin numerik belum tersedia. Tunggu data mesin selesai dimuat.');
+        return;
+      }
+
+      await updateChannel(editingChannel.id, {
+        name: updatedChannel.name,
+        jenis_mesin: channelMachineType,
+        tray_label: updatedChannel.name,
+        machine_id: machineRequestId,
+        controller_id: updatedChannel.controllerId,
+        ...(hideDoorSize ? {} : { door_size: updatedChannel.doorSize }),
+        active: String(updatedChannel.status),
+        status_now: updatedChannel.status ? 'ON' : 'OFF',
+        is_active: updatedChannel.status,
+        ...(isVendingMachine
+          ? {
+              function: editChannelForm.type || 'SNACK',
+              product_id: updatedChannel.productId,
+              capacity: updatedChannel.capacity,
+              tray_type: editChannelForm.type || 'Spiral',
+              spiral_diameter: updatedChannel.spiralDiameter,
+              tray_size: updatedChannel.traySize,
+              price_now: selectedProduct?.price,
+            }
+          : {}),
+      });
+
+      await loadChannels();
       setShowEditChannelModal(false);
       setEditingChannel(null);
+    } catch (err) {
+      const apiError = normalizeApiError(
+        err,
+        'Gagal menyimpan perubahan channel.'
+      );
+      setChannelMessage(apiError.message);
+    } finally {
+      setChannelSubmitting(false);
+    }
+  };
+
+  const handleAddChannelToController = (controllerId: number) => {
+    const controller = controllers.find((c) => c.id === controllerId);
+    
+    if (controller && controller.channelUsed < controller.channelTotal) {
+      // Add 1 to channel count
+      const updatedControllers = controllers.map((c) =>
+        c.id === controllerId
+          ? { ...c, channelUsed: c.channelUsed + 1 }
+          : c
+      );
+      setControllers(updatedControllers);
+
+      // Create new channel
+      const newChannelId = Math.max(...channels.map((ch) => ch.id), 0) + 1;
+      const newChannel = {
+        id: newChannelId,
+        controllerId: controllerId,
+        name: `Channel ${controller.channelUsed + 1}`,
+        type: 'Tray - Spiral',
+        productId: undefined,
+        product: 'Produk Baru',
+        capacity: 25,
+        stock: 0,
+        status: true,
+        spiralDiameter: '6mm',
+        traySize: 'A',
+        doorSize: 'Standard',
+      };
+      setChannels([...channels, newChannel]);
+    }
+  };
+
+  const handleRemoveChannelFromController = (controllerId: number) => {
+    const controller = controllers.find((c) => c.id === controllerId);
+    
+    if (controller && controller.channelUsed > 0) {
+      // Reduce 1 from channel count
+      const updatedControllers = controllers.map((c) =>
+        c.id === controllerId
+          ? { ...c, channelUsed: c.channelUsed - 1 }
+          : c
+      );
+      setControllers(updatedControllers);
+
+      // Remove the last channel of this controller
+      const controllerChannels = channels.filter((ch) => ch.controllerId === controllerId);
+      if (controllerChannels.length > 0) {
+        const lastChannel = controllerChannels[controllerChannels.length - 1];
+        setChannels(channels.filter((ch) => ch.id !== lastChannel.id));
+      }
+    }
+  };
+
+  const updateProductStock = async (productId: number, nextStock: number) => {
+    const resolvedNextStock = Math.max(0, nextStock);
+    const previousProduct = products.find((item) => item.id === productId) ?? null;
+
+    setProductStockSubmitting((currentValue) => ({
+      ...currentValue,
+      [productId]: true,
+    }));
+    setProductMessage('');
+    setProducts((currentValue) =>
+      currentValue.map((item) =>
+        item.id === productId ? { ...item, stock: resolvedNextStock } : item
+      )
+    );
+
+    try {
+      const partnerId = getPartnerId();
+
+      if (partnerId && machineRequestId) {
+        await updatePartnerMachineProduct(partnerId, machineRequestId, productId, {
+          code: previousProduct?.code,
+          name: previousProduct?.name,
+          default_price: previousProduct?.price,
+          currency: 'IDR',
+          status: previousProduct?.status,
+          stock: resolvedNextStock,
+        });
+        return;
+      }
+
+      await updateProduct(productId, { stock: resolvedNextStock });
+    } catch (err) {
+      const apiError = normalizeApiError(err, 'Gagal memperbarui stok produk.');
+      setProductMessage(apiError.message);
+      if (previousProduct) {
+        setProducts((currentValue) =>
+          currentValue.map((item) =>
+            item.id === productId ? { ...item, stock: previousProduct.stock } : item
+          )
+        );
+      }
+    } finally {
+      setProductStockSubmitting((currentValue) => ({
+        ...currentValue,
+        [productId]: false,
+      }));
     }
   };
 
   const handleIncreaseProductStock = (productId: number) => {
-    setProducts(
-      products.map((prod) =>
-        prod.id === productId ? { ...prod, stock: prod.stock + 1 } : prod
-      )
-    );
+    const product = products.find((item) => item.id === productId);
+    if (!product || productStockSubmitting[productId]) {
+      return;
+    }
+
+    void updateProductStock(productId, product.stock + 1);
   };
 
   const handleDecreaseProductStock = (productId: number) => {
-    setProducts(
-      products.map((prod) =>
-        prod.id === productId && prod.stock > 0
-          ? { ...prod, stock: prod.stock - 1 }
-          : prod
-      )
-    );
+    const product = products.find((item) => item.id === productId);
+    if (!product || product.stock <= 0 || productStockSubmitting[productId]) {
+      return;
+    }
+
+    void updateProductStock(productId, product.stock - 1);
   };
 
-  const handleAddProduct = () => {
+  const handleAddProduct = async () => {
+    if (!isVendingMachine) {
+      setProductMessage('Locker Laundry tidak mendukung penambahan produk.');
+      return;
+    }
+
     if (
-      newProductForm.name.trim() &&
-      newProductForm.price.trim() &&
-      newProductForm.stock.trim()
+      !newProductForm.name.trim() ||
+      !newProductForm.price.trim() ||
+      !newProductForm.stock.trim()
     ) {
-      const newProduct = {
-        id: Math.max(...products.map((p) => p.id), 0) + 1,
-        name: newProductForm.name,
-        price: parseInt(newProductForm.price),
-        image: 'https://images.unsplash.com/photo-1535950202760-b8b3e78bb8db?w=150&h=150&fit=crop',
+      setProductMessage('Nama produk, harga, dan stok wajib diisi.');
+      return;
+    }
+
+      const partnerId = getPartnerId();
+
+      if (!partnerId) {
+        setProductMessage('partner_id belum tersedia. Silakan login ulang dengan akun partner.');
+        return;
+      }
+
+    try {
+      setProductSubmitting(true);
+      setProductMessage('');
+      const nextId = Math.max(...products.map((p) => p.id), 0) + 1;
+      const parsedStock = parseInt(newProductForm.stock, 10);
+
+      if (!Number.isFinite(parsedStock) || parsedStock < 0) {
+        setProductMessage('Stok harus berupa angka yang valid.');
+        return;
+      }
+      if (!machineRequestId) {
+        setProductMessage('ID mesin numerik belum tersedia. Tunggu data mesin selesai dimuat.');
+        return;
+      }
+
+    await createPartnerMachineProduct(partnerId, machineRequestId, {
+        code: buildProductCode(newProductForm.name, nextId),
+        name: newProductForm.name.trim(),
+        default_price: parseInt(newProductForm.price, 10),
+        currency: 'IDR',
         category: newProductForm.category,
-        tag: newProductForm.supplier || newProductForm.category,
-        stock: parseInt(newProductForm.stock),
-      };
-      setProducts([...products, newProduct]);
+        tag: newProductForm.supplier || undefined,
+        stock: parsedStock,
+        status: 'Y',
+      });
+      await loadProducts();
       setShowAddProductModal(false);
       setNewProductForm({
         name: '',
@@ -359,10 +783,16 @@ export default function MachineDetailPage() {
         stock: '',
         supplier: '',
       });
+      setProductMessage('Produk berhasil ditambahkan.');
+    } catch (err) {
+      const apiError = normalizeApiError(err, 'Gagal menambahkan produk.');
+      setProductMessage(apiError.message);
+    } finally {
+      setProductSubmitting(false);
     }
   };
 
-  const handleEditProduct = (product: any) => {
+  const handleEditProduct = (product: ProductConfig) => {
     setEditingProduct(product);
     setEditProductForm({
       name: product.name,
@@ -373,39 +803,293 @@ export default function MachineDetailPage() {
     setShowEditProductModal(true);
   };
 
-  const handleSaveProductChanges = () => {
-    if (editingProduct) {
-      const updatedProducts = products.map((prod) =>
-        prod.id === editingProduct.id
-          ? {
-              ...prod,
-              name: editProductForm.name,
-              price: parseInt(editProductForm.price),
-              category: editProductForm.category,
-              tag: editProductForm.supplier,
-            }
-          : prod
+  const handleSaveProductChanges = async () => {
+    if (!editingProduct) {
+      return;
+    }
+
+    const partnerId = getPartnerId();
+
+    if (!partnerId) {
+      setProductMessage('partner_id belum tersedia. Silakan login ulang dengan akun partner.');
+      return;
+    }
+
+    try {
+      setProductSubmitting(true);
+      setProductMessage('');
+      if (!machineRequestId) {
+        setProductMessage('ID mesin numerik belum tersedia. Tunggu data mesin selesai dimuat.');
+        return;
+      }
+
+      await updatePartnerMachineProduct(partnerId, machineRequestId, editingProduct.id, {
+        code: editingProduct.code,
+        name: editProductForm.name.trim(),
+        default_price: parseInt(editProductForm.price, 10),
+        currency: 'IDR',
+        stock: editingProduct.stock,
+        status: editingProduct.status || 'Y',
+      });
+      await loadProducts();
+      setShowEditProductModal(false);
+      setEditingProduct(null);
+      setProductMessage('Produk berhasil diperbarui.');
+    } catch (err) {
+      const apiError = normalizeApiError(err, 'Gagal menyimpan produk.');
+      setProductMessage(apiError.message);
+    } finally {
+      setProductSubmitting(false);
+    }
+  };
+
+  const handleDeleteProduct = async () => {
+    if (!editingProduct) {
+      return;
+    }
+
+    const partnerId = getPartnerId();
+
+    if (!partnerId) {
+      setProductMessage('partner_id belum tersedia. Silakan login ulang dengan akun partner.');
+      return;
+    }
+
+    try {
+      setProductSubmitting(true);
+      setProductMessage('');
+      if (!machineRequestId) {
+        setProductMessage('ID mesin numerik belum tersedia. Tunggu data mesin selesai dimuat.');
+        return;
+      }
+
+      await deletePartnerMachineProduct(partnerId, machineRequestId, editingProduct.id);
+      await loadProducts();
+      setShowEditProductModal(false);
+      setEditingProduct(null);
+      setProductMessage('Produk berhasil dihapus.');
+    } catch (err) {
+      const apiError = normalizeApiError(err, 'Gagal menghapus produk.');
+      setProductMessage(apiError.message);
+    } finally {
+      setProductSubmitting(false);
+    }
+  };
+
+  const machineId = Array.isArray(params.id) ? params.id[0] : (params.id as string);
+  const machine = apiMachine;
+  const isVendingMachine =
+    machine?.type === 'vending' ||
+    shouldHideDoorSizeField(machine?.machineTypeCode, machine?.machineSerialNumber);
+  const isLockerLaundryMachine = isLockerLaundryType(machine?.machineTypeCode);
+  const channelMachineType = isVendingMachine ? 'venmachine' : 'locker';
+  const machineRequestId = apiMachine?.apiId ?? toOptionalNumber(machineId);
+  const hideDoorSizeInChannelEditor =
+    isVendingMachine ||
+    shouldHideDoorSizeField(
+      editingChannel?.machineTypeCode ?? machine?.machineTypeCode,
+      editingChannel?.machineSerialNumber ?? machine?.machineSerialNumber
+    );
+  const getChannelTypeLabel = (channel: ChannelConfig) => {
+    const shouldUseDoorSize =
+      Boolean(channel.doorSize) &&
+      !shouldHideDoorSizeField(channel.machineTypeCode, channel.machineSerialNumber) &&
+      (
+        !isVendingMachine ||
+        isLockerLaundryMachine ||
+        isLockerLaundryType(channel.jenisMesin) ||
+        isLockerLaundryType(channel.machineTypeCode)
       );
-      setProducts(updatedProducts);
-      setShowEditProductModal(false);
-      setEditingProduct(null);
-    }
+
+    return shouldUseDoorSize ? channel.doorSize : channel.type;
   };
 
-  const handleDeleteProduct = () => {
-    if (editingProduct) {
-      setProducts(products.filter((prod) => prod.id !== editingProduct.id));
-      setShowEditProductModal(false);
-      setEditingProduct(null);
-    }
-  };
+  const loadProducts = useCallback(async () => {
+    try {
+      setProductLoading(true);
+      setProductMessage('');
 
-  const machineId = params.id as string;
-  const machine = machineDetails[machineId] || machineDetails['VM-JKT-001'];
+      if (!isVendingMachine) {
+        setProducts([]);
+        return;
+      }
+
+      if (!machineRequestId) {
+        setProducts([]);
+        return;
+      }
+
+      const partnerId = getPartnerId();
+      const response = partnerId
+        ? await getPartnerMachineProducts(partnerId, machineRequestId)
+        : await getProducts({
+            limit: 100,
+            machine_id: machineRequestId,
+          });
+      setProducts(response.data.map(mapApiProduct));
+    } catch (err) {
+      const apiError = normalizeApiError(
+        err,
+        'Gagal memuat produk dari API.'
+      );
+      setProductMessage(apiError.message);
+      setProducts([]);
+    } finally {
+      setProductLoading(false);
+    }
+  }, [isVendingMachine, machineRequestId]);
+
+  const loadChannels = useCallback(async () => {
+    if (!machineRequestId) {
+      setChannelLoading(false);
+      return;
+    }
+
+    try {
+      setChannelLoading(true);
+      setChannelMessage('');
+      const response = await getChannels({ machine_id: machineRequestId, limit: 100 });
+      const mappedChannels = response.data.map(mapApiChannel);
+      setChannels(mappedChannels);
+      setControllers(buildControllersFromChannels(mappedChannels));
+    } catch (err) {
+      const apiError = normalizeApiError(
+        err,
+        'Gagal memuat channel dari API.'
+      );
+      setChannelMessage(apiError.message);
+      setChannels([]);
+      setControllers([]);
+    } finally {
+      setChannelLoading(false);
+    }
+  }, [machineRequestId]);
 
   useEffect(() => {
     setIsMounted(true);
   }, []);
+
+  useEffect(() => {
+    loadProducts();
+  }, [loadProducts]);
+
+  useEffect(() => {
+    loadChannels();
+  }, [loadChannels]);
+
+  useEffect(() => {
+    if (!isVendingMachine && activeTab === 'produk') {
+      setActiveTab('info');
+    }
+  }, [activeTab, isVendingMachine]);
+
+  useEffect(() => {
+    if (!machineId) {
+      return;
+    }
+
+    const fetchMachine = async () => {
+      try {
+        setMachineLoading(true);
+        setMachineError('');
+        const response = await getMachine(machineId);
+        const responseMachineId = response.id ?? response.machine_id ?? machineId;
+        const metrics = await getMachineTransactionMetrics(responseMachineId);
+        setApiMachine(mapApiMachine(response, metrics));
+
+        if (response.wifi_ssid) {
+          setWifiSSID(response.wifi_ssid);
+        }
+
+        if (typeof response.wifi_enabled === 'boolean') {
+          setWifiEnabled(response.wifi_enabled);
+        }
+
+        if (typeof response.power_enabled === 'boolean') {
+          setPowerEnabled(response.power_enabled);
+        }
+
+        if (response.image_url) {
+          setMachineImageUrl(response.image_url);
+        }
+      } catch (err) {
+        const apiError = normalizeApiError(
+          err,
+          'Gagal memuat detail mesin dari API.'
+        );
+        setMachineError(apiError.message);
+      } finally {
+        setMachineLoading(false);
+      }
+    };
+
+    fetchMachine();
+  }, [machineId]);
+
+  const handleUpdateWifi = async () => {
+    try {
+      setWifiSubmitting(true);
+      setWifiMessage('');
+      if (!machineRequestId) {
+        setWifiMessage('ID mesin numerik belum tersedia. Tunggu data mesin selesai dimuat.');
+        return;
+      }
+
+      await updateCurrentWiFiSettings({
+        machine_id: String(machineRequestId),
+        wifi_ssid: wifiSSID,
+        wifi_password: wifiPassword,
+      });
+      setWifiMessage('Pengaturan WiFi berhasil diperbarui.');
+    } catch (err) {
+      const apiError = normalizeApiError(
+        err,
+        'Gagal memperbarui WiFi mesin.'
+      );
+      setWifiMessage(apiError.message);
+    } finally {
+      setWifiSubmitting(false);
+    }
+  };
+
+  const handleToggleChannelStatus = async (channel: ChannelConfig) => {
+    try {
+      setChannelMessage('');
+      if (!machineRequestId) {
+        setChannelMessage('ID mesin numerik belum tersedia. Tunggu data mesin selesai dimuat.');
+        return;
+      }
+
+      await updateChannel(channel.id, {
+        jenis_mesin: channelMachineType,
+        machine_id: machineRequestId,
+        controller_id: channel.controllerId,
+        product_id: channel.productId,
+        active: String(!channel.status),
+        status_now: !channel.status ? 'ON' : 'OFF',
+        is_active: !channel.status,
+      });
+      await loadChannels();
+    } catch (err) {
+      const apiError = normalizeApiError(
+        err,
+        'Gagal memperbarui status channel.'
+      );
+      setChannelMessage(apiError.message);
+    }
+  };
+
+  const handleBackClick = () => {
+    if (isMounted && typeof window !== 'undefined') {
+      try {
+        router.back();
+      } catch (error) {
+        console.error('Navigation error:', error);
+        // Fallback to dashboard if back navigation fails
+        router.push('/dashboard');
+      }
+    }
+  };
 
   const getStatusBg = (status: string) => {
     switch (status) {
@@ -422,14 +1106,44 @@ export default function MachineDetailPage() {
     switch (type) {
       case 'vending':
         return '🤖';
-      case 'laundry':
-        return '🧺';
-      case 'space':
+      case 'locker':
         return '🏢';
       default:
         return '📦';
     }
   };
+
+  if (!machine) {
+    return (
+      <div className="flex h-screen bg-gray-100">
+        <Sidebar />
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <Header />
+          <div className="flex-1 overflow-y-auto pb-32 px-4 py-4">
+            <button
+              onClick={handleBackClick}
+              disabled={!isMounted}
+              className="flex items-center gap-2 text-blue-600 hover:text-blue-700 mb-4 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ArrowLeft className="w-5 h-5" />
+              Kembali
+            </button>
+
+            {machineLoading ? (
+              <div className="rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-700">
+                Memuat detail mesin...
+              </div>
+            ) : (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                {machineError || 'Detail mesin tidak ditemukan dari API.'}
+              </div>
+            )}
+          </div>
+        </div>
+        <BottomNav active="home" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-gray-100">
@@ -439,12 +1153,25 @@ export default function MachineDetailPage() {
         <div className="flex-1 overflow-y-auto pb-32 px-4 py-4">
           {/* Back Button */}
           <button
-            onClick={() => router.back()}
-            className="flex items-center gap-2 text-blue-600 hover:text-blue-700 mb-4 font-semibold"
+            onClick={handleBackClick}
+            disabled={!isMounted}
+            className="flex items-center gap-2 text-blue-600 hover:text-blue-700 mb-4 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <ArrowLeft className="w-5 h-5" />
             Kembali
           </button>
+
+          {machineError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {machineError}
+            </div>
+          )}
+
+          {machineLoading && (
+            <div className="mb-4 rounded-lg border border-blue-100 bg-blue-50 p-4 text-sm text-blue-700">
+              Memuat detail mesin...
+            </div>
+          )}
 
           {/* Machine Header Card */}
           <div className="bg-white rounded-lg shadow-md p-4 mb-4">
@@ -456,8 +1183,11 @@ export default function MachineDetailPage() {
             {/* Machine Title and Status */}
             <div className="flex items-start justify-between mb-3">
               <div>
-                <h2 className="text-xl font-bold text-gray-900">{machine.id}</h2>
+                <h2 className="text-xl font-bold text-gray-900">
+                  {machine.machineTypeLabel}
+                </h2>
                 <p className="text-sm text-gray-600">{machine.name}</p>
+                <p className="text-xs text-gray-500">ID Mesin {machine.id}</p>
               </div>
               <span
                 className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap ${getStatusBg(
@@ -489,7 +1219,11 @@ export default function MachineDetailPage() {
 
           {/* Tabs */}
           <div className="flex gap-2 mb-4 bg-white rounded-lg p-2 shadow-sm">
-            {(['info', 'setting', 'produk', 'aku'] as const).map((tab) => (
+            {(
+              isVendingMachine
+                ? (['info', 'setting', 'produk', 'aku'] as const)
+                : (['info', 'setting', 'aku'] as const)
+            ).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -610,49 +1344,167 @@ export default function MachineDetailPage() {
                 {/* Form Content */}
                 <div className="space-y-4">
                   {/* Jenis Tray */}
-                  <div>
-                    <label className="text-sm font-semibold text-gray-900 block mb-2">
-                      Jenis Tray
-                    </label>
-                    <select
-                      value={editChannelForm.type}
-                      onChange={(e) =>
-                        setEditChannelForm({ ...editChannelForm, type: e.target.value })
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                    >
-                      <option value="">Pilih Jenis Tray</option>
-                      <option value="Spiral">Spiral</option>
-                      <option value="Helical">Helical</option>
-                      <option value="Shelf">Shelf</option>
-                    </select>
-                  </div>
+                  {isVendingMachine && (
+                    <div>
+                      <label className="text-sm font-semibold text-gray-900 block mb-2">
+                        Jenis Tray
+                      </label>
+                      <select
+                        value={editChannelForm.type}
+                        onChange={(e) =>
+                          setEditChannelForm({ ...editChannelForm, type: e.target.value })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        <option value="">Pilih Jenis Tray</option>
+                        <option value="Spiral">Spiral</option>
+                        <option value="Helical">Helical</option>
+                        <option value="Shelf">Shelf</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Spiral Diameter - Hanya untuk Spiral di Vending */}
+                  {editChannelForm.type === 'Spiral' && isVendingMachine && (
+                    <div>
+                      <label className="text-sm font-semibold text-gray-900 block mb-2">
+                        Spiral Diameter (mm)
+                      </label>
+                      <input
+                        type="number"
+                        value={editChannelForm.spiralDiameter}
+                        onChange={(e) =>
+                          setEditChannelForm({
+                            ...editChannelForm,
+                            spiralDiameter: e.target.value,
+                          })
+                        }
+                        placeholder="Contoh: 25"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Tray Size - Hanya untuk Spiral di Vending */}
+                  {editChannelForm.type === 'Spiral' && isVendingMachine && (
+                    <div>
+                      <label className="text-sm font-semibold text-gray-900 block mb-2">
+                        Tray Size
+                      </label>
+                      <select
+                        value={editChannelForm.traySize}
+                        onChange={(e) =>
+                          setEditChannelForm({
+                            ...editChannelForm,
+                            traySize: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        <option value="">Pilih Ukuran Tray...</option>
+                        <option value="Small">Small</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Large">Large</option>
+                        <option value="Extra Large">Extra Large</option>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Door Size - hanya untuk tipe locker */}
+                  {!hideDoorSizeInChannelEditor && (
+                    <div>
+                      <label className="text-sm font-semibold text-gray-900 block mb-2">
+                        Door Size
+                      </label>
+                      <select
+                        value={editChannelForm.doorSize}
+                        onChange={(e) =>
+                          setEditChannelForm({
+                            ...editChannelForm,
+                            doorSize: e.target.value,
+                          })
+                        }
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                        >
+                          <option value="">Pilih Ukuran Pintu...</option>
+                          <option value="Small">Small (30x30cm)</option>
+                          <option value="Medium">Medium (40x40cm)</option>
+                          <option value="Large">Large (50x50cm)</option>
+                          <option value="Extra Large">Extra Large (60x60cm)</option>
+                        </select>
+                      </div>
+                    )}
 
                   {/* Kapasitas Stok */}
-                  <div>
-                    <label className="text-sm font-semibold text-gray-900 block mb-2">
-                      Kapasitas Stok (10-30 pcs)
-                    </label>
-                    <input
-                      type="number"
-                      min="10"
-                      max="30"
-                      value={editChannelForm.capacity}
-                      onChange={(e) =>
-                        setEditChannelForm({
-                          ...editChannelForm,
-                          capacity: e.target.value,
-                        })
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
+                  {isVendingMachine && (
+                    <div>
+                      <label className="text-sm font-semibold text-gray-900 block mb-2">
+                        Kapasitas Stok (10-30 pcs)
+                      </label>
+                      <input
+                        type="number"
+                        min="10"
+                        max="30"
+                        value={editChannelForm.capacity}
+                        onChange={(e) =>
+                          setEditChannelForm({
+                            ...editChannelForm,
+                            capacity: e.target.value,
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  )}
+
+                  {/* Pilih Produk */}
+                  {isVendingMachine && (
+                    <div>
+                      <label className="text-sm font-semibold text-gray-900 block mb-2">
+                        Pilih Produk
+                      </label>
+                      <select
+                        value={editChannelForm.productId}
+                        disabled={productLoading}
+                        onChange={(e) =>
+                          setEditChannelForm({
+                            ...editChannelForm,
+                            productId: e.target.value,
+                            product:
+                              products.find(
+                                (prod) => prod.id === Number(e.target.value)
+                              )?.name || '',
+                          })
+                        }
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        <option value="">
+                          {productLoading ? 'Memuat produk...' : 'Pilih Produk...'}
+                        </option>
+                        {products.map((prod) => (
+                          <option key={prod.id} value={prod.id}>
+                            {prod.name} (Rp {prod.price.toLocaleString('id-ID')})
+                          </option>
+                        ))}
+                      </select>
+                      {productMessage && (
+                        <p className="mt-1 text-xs text-red-600">
+                          {productMessage}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
+
+                {channelMessage && (
+                  <p className="mt-4 text-sm text-red-600">{channelMessage}</p>
+                )}
 
                 {/* Save Button */}
                 <button
                   onClick={handleSaveChannel}
-                  className="w-full mt-6 py-3 bg-gray-900 text-white rounded-lg hover:bg-black transition-colors font-medium flex items-center justify-center gap-2"
+                  disabled={channelSubmitting}
+                  className="w-full mt-6 py-3 bg-gray-900 text-white rounded-lg hover:bg-black disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
                 >
                   <svg
                     className="w-5 h-5"
@@ -661,14 +1513,112 @@ export default function MachineDetailPage() {
                   >
                     <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
                   </svg>
-                  Simpan Channel
+                  {channelSubmitting ? 'Menyimpan...' : 'Simpan Channel'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Configure Controller Modal */}
+          {isMounted && showConfigureControllerModal && configuringController && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-lg shadow-lg max-w-2xl w-full p-6 border-2 border-blue-500">
+                {/* Header */}
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold text-gray-900">
+                    Konfigurasi {configuringController.name}
+                  </h3>
+                  <button
+                    onClick={() => {
+                      setShowConfigureControllerModal(false);
+                      setConfiguringController(null);
+                    }}
+                    className="text-gray-400 hover:text-gray-600 p-1"
+                  >
+                    <svg
+                      className="w-6 h-6"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                  </button>
+                </div>
+
+                {/* Controller Info */}
+                <div className="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-xs text-gray-600 font-semibold">Nama Controller</p>
+                      <p className="text-sm font-bold text-gray-900">{configuringController.name}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-600 font-semibold">Kapasitas Total</p>
+                      <p className="text-sm font-bold text-gray-900">{configuringController.capacity}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-600 font-semibold">Channel Digunakan</p>
+                      <p className="text-sm font-bold text-blue-600">{configuringController.channelUsed} / {configuringController.channelTotal}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-600 font-semibold">Channel Tersedia</p>
+                      <p className="text-sm font-bold text-green-600">{configuringController.channelTotal - configuringController.channelUsed}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Channels List */}
+                <div className="mb-6">
+                  <h4 className="text-sm font-bold text-gray-900 mb-3">Channel Terkonfigurasi ({channels.filter(ch => ch.controllerId === configuringController.id).length})</h4>
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {channels.filter(ch => ch.controllerId === configuringController.id).length > 0 ? (
+                      channels.filter(ch => ch.controllerId === configuringController.id).map((channel) => (
+                        <div key={channel.id} className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50">
+                          <div className="flex-1">
+                            <p className="text-sm font-semibold text-gray-900">{channel.name}</p>
+                            <p className="text-xs text-gray-600">{getChannelTypeLabel(channel)} - {channel.product}</p>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-xs font-semibold text-gray-700">Stok: {channel.stock}/{channel.capacity}</p>
+                            <button
+                              onClick={() => handleEditChannel(channel)}
+                              className="text-blue-600 hover:text-blue-700 text-xs font-medium mt-1"
+                            >
+                              Edit
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="text-center py-6 text-gray-500">
+                        <p className="text-sm">Belum ada channel yang dikonfigurasi</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Close Button */}
+                <button
+                  onClick={() => {
+                    setShowConfigureControllerModal(false);
+                    setConfiguringController(null);
+                  }}
+                  className="w-full py-3 bg-gray-900 text-white rounded-lg hover:bg-black transition-colors font-medium"
+                >
+                  Tutup
                 </button>
               </div>
             </div>
           )}
 
           {/* Add Product Modal */}
-          {isMounted && showAddProductModal && (
+          {isMounted && isVendingMachine && showAddProductModal && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6 border-2 border-blue-500">
                 {/* Header */}
@@ -785,7 +1735,8 @@ export default function MachineDetailPage() {
                 {/* Save Button */}
                 <button
                   onClick={handleAddProduct}
-                  className="w-full mt-6 py-3 bg-gray-900 text-white rounded-lg hover:bg-black transition-colors font-medium flex items-center justify-center gap-2"
+                  disabled={productSubmitting}
+                  className="w-full mt-6 py-3 bg-gray-900 text-white rounded-lg hover:bg-black disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
                 >
                   <svg
                     className="w-5 h-5"
@@ -794,14 +1745,14 @@ export default function MachineDetailPage() {
                   >
                     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z" />
                   </svg>
-                  Simpan Produk
+                  {productSubmitting ? 'Menyimpan...' : 'Simpan Produk'}
                 </button>
               </div>
             </div>
           )}
 
           {/* Edit Product Modal */}
-          {isMounted && showEditProductModal && editingProduct && (
+          {isMounted && isVendingMachine && showEditProductModal && editingProduct && (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
               <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6 border-2 border-blue-500">
                 {/* Header */}
@@ -903,13 +1854,15 @@ export default function MachineDetailPage() {
                 <div className="flex items-center gap-2 mt-6">
                   <button
                     onClick={handleSaveProductChanges}
-                    className="flex-1 py-3 bg-gray-900 text-white rounded-lg hover:bg-black transition-colors font-medium"
+                    disabled={productSubmitting}
+                    className="flex-1 py-3 bg-gray-900 text-white rounded-lg hover:bg-black disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium"
                   >
-                    Simpan Perubahan
+                    {productSubmitting ? 'Menyimpan...' : 'Simpan Perubahan'}
                   </button>
                   <button
                     onClick={handleDeleteProduct}
-                    className="p-3 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200"
+                    disabled={productSubmitting}
+                    className="p-3 text-red-600 hover:bg-red-50 disabled:text-gray-400 disabled:cursor-not-allowed rounded-lg transition-colors border border-red-200"
                   >
                     <svg
                       className="w-5 h-5"
@@ -1007,7 +1960,7 @@ export default function MachineDetailPage() {
                     <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
                     <div>
                       <p className="text-xs font-semibold text-red-900">Hapus Mesin</p>
-                      <p className="text-xs text-red-700">Hapus mesin VM-JKT-001 secara permanen</p>
+                      <p className="text-xs text-red-700">Hapus mesin ini secara permanen</p>
                     </div>
                   </div>
                 </div>
@@ -1019,7 +1972,7 @@ export default function MachineDetailPage() {
             <div className="space-y-4">
               {/* Setting Sub-tabs */}
               <div className="flex gap-2 bg-white rounded-lg p-2 shadow-sm">
-                {(['koneksi', 'gambar', 'controller', 'channel'] as const).map((tab) => (
+                {(['koneksi', 'gambar', 'channel'] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveSettingTab(tab)}
@@ -1085,8 +2038,17 @@ export default function MachineDetailPage() {
                             />
                           </div>
 
-                          <button className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm">
-                            Update WiFi
+                          {wifiMessage && (
+                            <p className="text-xs text-gray-600">{wifiMessage}</p>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={handleUpdateWifi}
+                            disabled={wifiSubmitting}
+                            className="w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors font-medium text-sm"
+                          >
+                            {wifiSubmitting ? 'Mengupdate WiFi...' : 'Update WiFi'}
                           </button>
                         </div>
                       )}
@@ -1188,117 +2150,6 @@ export default function MachineDetailPage() {
                 </div>
               )}
 
-              {/* Controller Tab */}
-              {activeSettingTab === 'controller' && (
-                <div className="bg-white rounded-lg shadow-md p-4 space-y-4">
-                  {/* Header */}
-                  <div className="flex items-center justify-between mb-6">
-                    <h4 className="text-sm font-bold text-gray-900">
-                      {controllers.length} controller terpasang
-                    </h4>
-                    <button 
-                      onClick={() => setShowAddChannelModal(true)}
-                      className="bg-gray-900 text-white px-4 py-2 rounded-lg hover:bg-black transition-colors font-medium text-sm flex items-center gap-2"
-                    >
-                      <span>+</span>
-                      Tambah
-                    </button>
-                  </div>
-
-                  {/* Controllers List */}
-                  <div className="space-y-4">
-                    {controllers.map((controller) => (
-                      <div key={controller.id} className="border border-gray-200 rounded-lg p-4">
-                        {/* Controller Header */}
-                        <div className="flex items-start justify-between mb-4">
-                          <div className="flex items-start gap-3">
-                            <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
-                              <svg
-                                className="w-4 h-4 text-blue-600"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                                />
-                              </svg>
-                            </div>
-                            <div>
-                              <p className="text-sm font-bold text-gray-900">{controller.name}</p>
-                              <p className="text-xs text-gray-500">
-                                Kapasitas: {controller.capacity}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Delete Button */}
-                          <button
-                            onClick={() =>
-                              setControllers(
-                                controllers.filter((c) => c.id !== controller.id)
-                              )
-                            }
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                          >
-                            <svg
-                              className="w-4 h-4"
-                              fill="none"
-                              stroke="currentColor"
-                              viewBox="0 0 24 24"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
-                              />
-                            </svg>
-                          </button>
-                        </div>
-
-                        {/* Channel Usage */}
-                        <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-semibold text-gray-700">
-                              Penggunaan Channel
-                            </p>
-                            <p className="text-xs font-semibold text-gray-900">
-                              {controller.channelUsed} / {controller.channelTotal}
-                            </p>
-                          </div>
-
-                          {/* Progress Bar */}
-                          <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full transition-all ${getProgressBarColor(
-                                controller.channelUsed,
-                                controller.channelTotal
-                              )}`}
-                              style={{
-                                width: `${(controller.channelUsed / controller.channelTotal) * 100}%`,
-                              }}
-                            />
-                          </div>
-                        </div>
-
-                        {/* Add Channel Button */}
-                        <button 
-                          onClick={() => setShowAddChannelModal(true)}
-                          className="w-full mt-4 py-2 text-gray-700 hover:bg-gray-50 rounded-lg transition-colors text-sm font-medium flex items-center justify-center gap-2 border border-gray-200"
-                        >
-                          <span>+</span>
-                          Tambah Channel
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               {/* Channel Tab */}
               {activeSettingTab === 'channel' && (
                 <div className="bg-white rounded-lg shadow-md p-4 space-y-6">
@@ -1308,7 +2159,24 @@ export default function MachineDetailPage() {
                     {channels.length} channel
                   </h4>
 
+                  {channelMessage && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                      {channelMessage}
+                    </div>
+                  )}
+
+                  {channelLoading && (
+                    <p className="text-sm text-gray-500">Memuat channel...</p>
+                  )}
+
+                  {!channelLoading && channels.length === 0 && !channelMessage && (
+                    <p className="text-sm text-gray-500">
+                      Belum ada channel terdaftar untuk mesin ini.
+                    </p>
+                  )}
+
                   {/* Channels by Controller */}
+                  {!channelLoading && channels.length > 0 && (
                   <div className="space-y-6">
                     {controllers.map((controller) => {
                       const controllerChannels = channels.filter(
@@ -1351,7 +2219,7 @@ export default function MachineDetailPage() {
                                     </p>
                                     <div className="flex items-center gap-2 mt-1">
                                       <span className="text-xs font-semibold bg-amber-100 text-amber-800 px-2 py-1 rounded">
-                                        {channel.type}
+                                        {getChannelTypeLabel(channel)}
                                       </span>
                                     </div>
                                   </div>
@@ -1360,18 +2228,7 @@ export default function MachineDetailPage() {
                                   <div className="flex items-center gap-2">
                                     {/* Toggle Switch */}
                                     <button
-                                      onClick={() => {
-                                        setChannels(
-                                          channels.map((ch) =>
-                                            ch.id === channel.id
-                                              ? {
-                                                  ...ch,
-                                                  status: !ch.status,
-                                                }
-                                              : ch
-                                          )
-                                        );
-                                      }}
+                                      onClick={() => handleToggleChannelStatus(channel)}
                                       className={`w-10 h-6 rounded-full transition-colors flex items-center ${
                                         channel.status
                                           ? 'bg-gray-800'
@@ -1415,19 +2272,21 @@ export default function MachineDetailPage() {
                                 </div>
 
                                 {/* Product Info */}
-                                <div className="space-y-2">
-                                  <div>
-                                    <p className="text-xs text-gray-600">Produk:</p>
-                                    <p className="text-sm text-gray-900 font-medium">
-                                      {channel.product}
+                                {isVendingMachine && (
+                                  <div className="space-y-2">
+                                    <div>
+                                      <p className="text-xs text-gray-600">Produk:</p>
+                                      <p className="text-sm text-gray-900 font-medium">
+                                        {channel.product}
+                                      </p>
+                                    </div>
+
+                                    <p className="text-xs text-gray-500">
+                                      Kapasitas: {channel.capacity} pcs | Stok:{' '}
+                                      {channel.stock} pcs
                                     </p>
                                   </div>
-
-                                  <p className="text-xs text-gray-500">
-                                    Kapasitas: {channel.capacity} pcs | Stok:{' '}
-                                    {channel.stock} pcs
-                                  </p>
-                                </div>
+                                )}
                               </div>
                             ))}
                           </div>
@@ -1435,12 +2294,13 @@ export default function MachineDetailPage() {
                       );
                     })}
                   </div>
+                  )}
                 </div>
               )}
             </div>
           )}
 
-          {activeTab === 'produk' && (
+          {activeTab === 'produk' && isVendingMachine && (
             <div className="space-y-4">
               {/* Header */}
               <div className="flex items-center justify-between">
@@ -1449,6 +2309,7 @@ export default function MachineDetailPage() {
                 </h3>
                 <button 
                   onClick={() => setShowAddProductModal(true)}
+                  disabled={productSubmitting}
                   className="flex items-center gap-2 px-4 py-2 bg-gray-900 text-white rounded-lg hover:bg-black transition-colors font-medium text-sm"
                 >
                   <span>+</span>
@@ -1456,9 +2317,19 @@ export default function MachineDetailPage() {
                 </button>
               </div>
 
+              {productMessage && (
+                <div className="rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-700">
+                  {productMessage}
+                </div>
+              )}
+
+              {productLoading && (
+                <p className="text-sm text-gray-500">Memuat produk...</p>
+              )}
+
               {/* Products Grid */}
               <div className="space-y-3">
-                {products.map((product) => (
+                {!productLoading && products.map((product) => (
                   <div key={product.id} className="bg-white rounded-lg shadow-md p-4">
                     <div className="flex gap-4">
                       {/* Product Image */}
@@ -1521,7 +2392,11 @@ export default function MachineDetailPage() {
                           <div className="flex items-center gap-3">
                             <button
                               onClick={() => handleDecreaseProductStock(product.id)}
-                              className="w-8 h-8 flex items-center justify-center border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+                              disabled={
+                                product.stock <= 0 ||
+                                Boolean(productStockSubmitting[product.id])
+                              }
+                              className="w-8 h-8 flex items-center justify-center border border-gray-300 rounded-lg transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
                             >
                               −
                             </button>
@@ -1530,7 +2405,8 @@ export default function MachineDetailPage() {
                             </span>
                             <button
                               onClick={() => handleIncreaseProductStock(product.id)}
-                              className="w-8 h-8 flex items-center justify-center border border-gray-300 rounded-lg hover:bg-gray-100 transition-colors"
+                              disabled={Boolean(productStockSubmitting[product.id])}
+                              className="w-8 h-8 flex items-center justify-center border border-gray-300 rounded-lg transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400"
                             >
                               +
                             </button>
@@ -1540,6 +2416,11 @@ export default function MachineDetailPage() {
                     </div>
                   </div>
                 ))}
+                {!productLoading && products.length === 0 && (
+                  <p className="rounded-lg bg-white p-4 text-sm text-gray-500 shadow-md">
+                    Belum ada produk untuk mesin ini.
+                  </p>
+                )}
               </div>
             </div>
           )}

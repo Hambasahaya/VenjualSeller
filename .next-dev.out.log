@@ -1,0 +1,19 @@
+
+> venjualseller@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.3 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.136:3000
+✓ Ready in 1821ms
+Creating turbopack project { dir: 'D:\\VenjualSeller', testMode: true }
+
+ GET /auth/login?redirect=%2Fdashboard 200 in 3.7s (next.js: 1068ms, application-code: 2.7s)
+ GET /dashboard 200 in 1859ms (next.js: 262ms, application-code: 1597ms)
+ GET /auth/login 200 in 1118ms (next.js: 34ms, application-code: 1084ms)
+ GET /dashboard 200 in 762ms (next.js: 26ms, application-code: 736ms)
+ GET /auth/login 200 in 888ms (next.js: 35ms, application-code: 853ms)
+ GET /dashboard 200 in 1980ms (next.js: 43ms, application-code: 1938ms)
+ GET /auth/login 200 in 3.4s (next.js: 53ms, application-code: 3.3s)
+ GET /auth/forgot-password 200 in 1566ms (next.js: 347ms, application-code: 1219ms)
+ GET /auth/login 200 in 667ms (next.js: 78ms, application-code: 589ms)

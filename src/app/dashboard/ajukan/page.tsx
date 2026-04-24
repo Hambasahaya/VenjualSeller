@@ -1,252 +1,343 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import {
+  CheckCircle2,
+  FileText,
+  Landmark,
+  LayoutGrid,
+  Loader2,
+  MapPin,
+  Wallet,
+} from 'lucide-react';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import Sidebar from '@/components/Sidebar';
-import { Package, Upload, X } from 'lucide-react';
+import {
+  ApiError,
+  createCurrentPartnerMachineSubmission,
+  getCurrentMerchantBalance,
+  MachineSubmission,
+  MachineSubmissionCategory,
+  MerchantBalance,
+  requestCurrentWithdrawal,
+} from '@/lib/services';
 
-type SubmissionType = 'add-machine' | 'upgrade-machine' | 'withdrawal' | '';
+type SubmissionMode = 'machine' | 'withdrawal';
 
-interface FormData {
-  submissionType: SubmissionType;
-  machineName: string;
-  location: string;
-  category: string;
-  capacity: string;
+type MachineFormData = {
+  kategori_mesin: MachineSubmissionCategory;
+  lokasi: string;
+  deskripsi: string;
+};
+
+type WithdrawalFormData = {
+  amount: string;
+  bank_name: string;
+  bank_account_number: string;
+  bank_account_name: string;
+  notes: string;
+};
+
+type SubmissionFeedback =
+  | {
+      type: 'machine';
+      submission: MachineSubmission;
+    }
+  | {
+      type: 'withdrawal';
+      amount: number;
+    }
+  | null;
+
+const CATEGORY_OPTIONS: Array<{
+  value: MachineSubmissionCategory;
+  label: string;
   description: string;
-  withdrawalAmount: string;
-  uploadedFile: File | null;
-  // For upgrade machine
-  existingMachineId: string;
-  upgradePurpose: string;
-  currentCondition: string;
+}> = [
+  {
+    value: 'vending_machine',
+    label: 'Vending Machine',
+    description: 'Untuk pengajuan mesin penjualan otomatis.',
+  },
+  {
+    value: 'locker_laundry',
+    label: 'Locker Laundry',
+    description: 'Untuk pengajuan mesin locker laundry.',
+  },
+];
+
+const INITIAL_MACHINE_FORM: MachineFormData = {
+  kategori_mesin: 'vending_machine',
+  lokasi: '',
+  deskripsi: '',
+};
+
+const INITIAL_WITHDRAWAL_FORM: WithdrawalFormData = {
+  amount: '',
+  bank_name: '',
+  bank_account_number: '',
+  bank_account_name: '',
+  notes: '',
+};
+
+function formatCurrency(value: number | undefined) {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency',
+    currency: 'IDR',
+    maximumFractionDigits: 0,
+  }).format(value ?? 0);
 }
 
 export default function AjukanPage() {
-  const [formData, setFormData] = useState<FormData>({
-    submissionType: 'add-machine',
-    machineName: '',
-    location: '',
-    category: '',
-    capacity: '',
-    description: '',
-    withdrawalAmount: '',
-    uploadedFile: null,
-    existingMachineId: '',
-    upgradePurpose: '',
-    currentCondition: '',
-  });
-
-  const [submitted, setSubmitted] = useState(false);
+  const router = useRouter();
+  const [mode, setMode] = useState<SubmissionMode>('machine');
+  const [machineForm, setMachineForm] = useState<MachineFormData>(
+    INITIAL_MACHINE_FORM
+  );
+  const [withdrawalForm, setWithdrawalForm] = useState<WithdrawalFormData>(
+    INITIAL_WITHDRAWAL_FORM
+  );
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [dragActive, setDragActive] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [feedback, setFeedback] = useState<SubmissionFeedback>(null);
+  const [balance, setBalance] = useState<MerchantBalance | null>(null);
+  const [balanceLoading, setBalanceLoading] = useState(true);
+  const [balanceError, setBalanceError] = useState('');
 
-  const submissionTypes = [
-    { value: 'add-machine', label: 'Tambah Mesin Baru' },
-    { value: 'upgrade-machine', label: 'Upgrade Mesin' },
-    { value: 'withdrawal', label: 'Ajukan Pencairan' },
-  ];
+  useEffect(() => {
+    let isCancelled = false;
 
-  const categories = [
-    { value: 'vending', label: 'Vending Machine' },
-    { value: 'laundry', label: 'Mesin Laundry' },
-    { value: 'space', label: 'Locker Space' },
-  ];
+    const fetchBalance = async () => {
+      try {
+        setBalanceLoading(true);
+        setBalanceError('');
+        const response = await getCurrentMerchantBalance();
 
-  // Mock data for existing machines
-  const existingMachines = [
-    { id: 'VM-JKT-001', name: 'Vending Kopi - Mall Central Park' },
-    { id: 'VM-JKT-002', name: 'Vending Snack - Gedung Sudirman' },
-    { id: 'LM-JKT-003', name: 'Laundry Otomatis - UI Depok' },
-  ];
+        if (!isCancelled) {
+          setBalance(response);
+        }
+      } catch (error) {
+        if (isCancelled) {
+          return;
+        }
 
-  const digitalBalance = 7500000; // Dummy saldo digital
+        const apiError = error as ApiError;
+        setBalance(null);
+        setBalanceError(apiError.message || 'Gagal memuat saldo merchant.');
+      } finally {
+        if (!isCancelled) {
+          setBalanceLoading(false);
+        }
+      }
+    };
 
-  const formatCurrency = (value: number) =>
-    new Intl.NumberFormat('id-ID', {
-      style: 'currency',
-      currency: 'IDR',
-      maximumFractionDigits: 0,
-    }).format(value);
+    fetchBalance();
 
-  const handleInputChange = (
-    e: React.ChangeEvent<
-      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
-    >
+    return () => {
+      isCancelled = true;
+    };
+  }, []);
+
+  const availableBalance = balance?.available_balance ?? balance?.balance ?? 0;
+  const pendingWithdrawal = balance?.pending_withdrawal ?? 0;
+
+  const selectedCategoryDescription = useMemo(
+    () =>
+      CATEGORY_OPTIONS.find(
+        (option) => option.value === machineForm.kategori_mesin
+      )?.description,
+    [machineForm.kategori_mesin]
+  );
+
+  const handleModeChange = (nextMode: SubmissionMode) => {
+    setMode(nextMode);
+    setErrors({});
+    setFeedback(null);
+  };
+
+  const handleMachineInputChange = (
+    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
   ) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({
+    const { name, value } = event.target;
+
+    setMachineForm((prev) => ({
       ...prev,
       [name]: value,
     }));
-    if (errors[name]) {
+
+    if (errors[name] || errors.submit) {
       setErrors((prev) => ({
         ...prev,
         [name]: '',
+        submit: '',
       }));
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const validTypes = ['image/png', 'image/jpeg', 'application/pdf'];
-      const maxSize = 5 * 1024 * 1024; // 5MB
+  const handleWithdrawalInputChange = (
+    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value } = event.target;
+    const nextValue = name === 'amount' ? value.replace(/\D/g, '') : value;
 
-      if (!validTypes.includes(file.type)) {
-        setErrors((prev) => ({
-          ...prev,
-          file: 'Format file harus PNG, JPG, atau PDF',
-        }));
-        return;
-      }
-
-      if (file.size > maxSize) {
-        setErrors((prev) => ({
-          ...prev,
-          file: 'Ukuran file tidak boleh lebih dari 5MB',
-        }));
-        return;
-      }
-
-      setFormData((prev) => ({
-        ...prev,
-        uploadedFile: file,
-      }));
-      setErrors((prev) => ({
-        ...prev,
-        file: '',
-      }));
-    }
-  };
-
-  const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true);
-    } else if (e.type === 'dragleave') {
-      setDragActive(false);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      const validTypes = ['image/png', 'image/jpeg', 'application/pdf'];
-      const maxSize = 5 * 1024 * 1024;
-
-      if (!validTypes.includes(file.type)) {
-        setErrors((prev) => ({
-          ...prev,
-          file: 'Format file harus PNG, JPG, atau PDF',
-        }));
-        return;
-      }
-
-      if (file.size > maxSize) {
-        setErrors((prev) => ({
-          ...prev,
-          file: 'Ukuran file tidak boleh lebih dari 5MB',
-        }));
-        return;
-      }
-
-      setFormData((prev) => ({
-        ...prev,
-        uploadedFile: file,
-      }));
-      setErrors((prev) => ({
-        ...prev,
-        file: '',
-      }));
-    }
-  };
-
-  const removeFile = () => {
-    setFormData((prev) => ({
+    setWithdrawalForm((prev) => ({
       ...prev,
-      uploadedFile: null,
+      [name]: nextValue,
     }));
+
+    if (errors[name] || errors.submit) {
+      setErrors((prev) => ({
+        ...prev,
+        [name]: '',
+        submit: '',
+      }));
+    }
   };
 
-  const validateForm = () => {
-    const newErrors: Record<string, string> = {};
+  const validateMachineForm = () => {
+    const nextErrors: Record<string, string> = {};
 
-    if (!formData.submissionType) {
-      newErrors.submissionType = 'Jenis pengajuan harus dipilih';
+    if (!CATEGORY_OPTIONS.some((option) => option.value === machineForm.kategori_mesin)) {
+      nextErrors.kategori_mesin = 'Kategori mesin harus dipilih.';
     }
 
-    if (formData.submissionType === 'add-machine') {
-      if (!formData.machineName.trim()) {
-        newErrors.machineName = 'Nama mesin harus diisi';
-      }
-      if (!formData.location.trim()) {
-        newErrors.location = 'Lokasi/Alamat harus diisi';
-      }
-      if (!formData.category) {
-        newErrors.category = 'Kategori harus dipilih';
-      }
-      if (!formData.capacity.trim()) {
-        newErrors.capacity = 'Kapasitas harus diisi';
-      }
-    } else if (formData.submissionType === 'upgrade-machine') {
-      if (!formData.existingMachineId) {
-        newErrors.existingMachineId = 'Pilih mesin yang ingin di-upgrade';
-      }
-      if (!formData.upgradePurpose.trim()) {
-        newErrors.upgradePurpose = 'Tujuan upgrade harus diisi';
-      }
-    } else if (formData.submissionType === 'withdrawal') {
-      const amount = Number(formData.withdrawalAmount);
-      if (!formData.withdrawalAmount || Number.isNaN(amount) || amount <= 0) {
-        newErrors.withdrawalAmount = 'Jumlah pencairan harus diisi';
-      } else if (amount > digitalBalance) {
-        newErrors.withdrawalAmount =
-          'Jumlah pencairan tidak boleh melebihi saldo digital';
-      }
+    if (!machineForm.lokasi.trim()) {
+      nextErrors.lokasi = 'Lokasi pengajuan harus diisi.';
     }
 
-    if (
-      formData.submissionType !== 'withdrawal' &&
-      !formData.description.trim()
-    ) {
-      newErrors.description = 'Deskripsi harus diisi';
+    if (!machineForm.deskripsi.trim()) {
+      nextErrors.deskripsi = 'Deskripsi pengajuan harus diisi.';
     }
 
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const validateWithdrawalForm = () => {
+    const nextErrors: Record<string, string> = {};
+    const withdrawalAmount = Number(withdrawalForm.amount);
 
-    if (validateForm()) {
-      console.log('Form submitted:', formData);
-      setSubmitted(true);
-      setTimeout(() => {
-        setFormData({
-          submissionType: 'add-machine',
-          machineName: '',
-          location: '',
-          category: '',
-          capacity: '',
-          description: '',
-          withdrawalAmount: '',
-          uploadedFile: null,
-          existingMachineId: '',
-          upgradePurpose: '',
-          currentCondition: '',
-        });
-        setErrors({});
-        setSubmitted(false);
-      }, 3000);
+    if (!withdrawalForm.amount) {
+      nextErrors.amount = 'Nominal pencairan harus diisi.';
+    } else if (!Number.isFinite(withdrawalAmount) || withdrawalAmount <= 0) {
+      nextErrors.amount = 'Nominal pencairan harus lebih besar dari 0.';
+    } else if (withdrawalAmount > availableBalance) {
+      nextErrors.amount = 'Nominal pencairan melebihi saldo yang tersedia.';
     }
+
+    if (!withdrawalForm.bank_name.trim()) {
+      nextErrors.bank_name = 'Nama bank harus diisi.';
+    }
+
+    if (!withdrawalForm.bank_account_number.trim()) {
+      nextErrors.bank_account_number = 'Nomor rekening harus diisi.';
+    }
+
+    if (!withdrawalForm.bank_account_name.trim()) {
+      nextErrors.bank_account_name = 'Nama pemilik rekening harus diisi.';
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
+  const handleMachineSubmit = async () => {
+    if (!validateMachineForm()) {
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setErrors({});
+      setFeedback(null);
+
+      const response = await createCurrentPartnerMachineSubmission({
+        kategori_mesin: machineForm.kategori_mesin,
+        lokasi: machineForm.lokasi.trim(),
+        deskripsi: machineForm.deskripsi.trim(),
+      });
+
+      setFeedback({
+        type: 'machine',
+        submission: response,
+      });
+      setMachineForm(INITIAL_MACHINE_FORM);
+
+      window.setTimeout(() => {
+        router.push('/dashboard/account/pengajuan');
+      }, 1400);
+    } catch (error) {
+      const apiError = error as ApiError;
+      setErrors({
+        submit: apiError.message || 'Gagal mengirim pengajuan mesin.',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleWithdrawalSubmit = async () => {
+    if (!validateWithdrawalForm()) {
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setErrors({});
+      setFeedback(null);
+
+      const withdrawalAmount = Number(withdrawalForm.amount);
+
+      await requestCurrentWithdrawal({
+        amount: withdrawalAmount,
+        bank_name: withdrawalForm.bank_name.trim(),
+        bank_account_number: withdrawalForm.bank_account_number.trim(),
+        bank_account_name: withdrawalForm.bank_account_name.trim(),
+        notes: withdrawalForm.notes.trim() || 'Pengajuan pencairan dana partner',
+      });
+
+      setFeedback({
+        type: 'withdrawal',
+        amount: withdrawalAmount,
+      });
+      setWithdrawalForm(INITIAL_WITHDRAWAL_FORM);
+
+      setBalance((currentBalance) =>
+        currentBalance
+          ? {
+              ...currentBalance,
+              available_balance: Math.max(
+                0,
+                (currentBalance.available_balance ?? currentBalance.balance) -
+                  withdrawalAmount
+              ),
+              pending_withdrawal:
+                (currentBalance.pending_withdrawal ?? 0) + withdrawalAmount,
+            }
+          : currentBalance
+      );
+    } catch (error) {
+      const apiError = error as ApiError;
+      setErrors({
+        submit: apiError.message || 'Gagal mengajukan pencairan dana.',
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (mode === 'machine') {
+      await handleMachineSubmit();
+      return;
+    }
+
+    await handleWithdrawalSubmit();
   };
 
   return (
@@ -254,389 +345,409 @@ export default function AjukanPage() {
       <Sidebar active="ajukan" />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header userName="Pemilik Mesin" userRole="Partner" />
+        <Header userName="Partner" userRole="Partner" />
 
         <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
           <div className="p-4 md:p-6">
-            <div className="max-w-2xl mx-auto">
-              {/* Page Header */}
-              <div className="mb-6">
-                <h1 className="text-2xl md:text-3xl font-bold text-gray-900 mb-2">
-                  Pengajuan Baru
-                </h1>
-                <p className="text-sm text-gray-600">
-                  {formData.submissionType === 'add-machine'
-                    ? 'Ajukan mesin baru'
-                    : formData.submissionType === 'upgrade-machine'
-                      ? 'Upgrade mesin Anda'
-                      : 'Ajukan pencairan saldo digital'}
-                </p>
+            <div className="max-w-4xl mx-auto space-y-6">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h1 className="text-2xl md:text-3xl font-bold text-gray-900">
+                    Ajukan Layanan
+                  </h1>
+                  <p className="mt-2 text-sm text-gray-600">
+                    Pilih pengajuan mesin baru atau pencairan dana sesuai kebutuhan
+                    operasional partner Anda.
+                  </p>
+                </div>
+
+                <Link
+                  href="/dashboard/account/pengajuan"
+                  className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                >
+                  <FileText className="h-4 w-4" />
+                  Riwayat Pengajuan & Withdrawal
+                </Link>
               </div>
 
-              {/* Success Message */}
-              {submitted && (
-                <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-                  <p className="text-green-800 font-medium text-sm">
-                    ✓ Pengajuan Anda berhasil dikirim. Tim kami akan menghubungi Anda segera.
+              <div className="grid gap-4 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('machine')}
+                  className={`rounded-2xl border p-5 text-left shadow-sm transition-colors ${
+                    mode === 'machine'
+                      ? 'border-blue-500 bg-blue-50 ring-1 ring-blue-200'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <LayoutGrid className="h-5 w-5 text-blue-600" />
+                    <p className="text-sm font-semibold text-gray-900">
+                      Pengajuan Mesin
+                    </p>
+                  </div>
+                  <p className="mt-2 text-sm text-gray-600">
+                    Ajukan vending machine atau locker laundry baru untuk lokasi
+                    partner.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleModeChange('withdrawal')}
+                  className={`rounded-2xl border p-5 text-left shadow-sm transition-colors ${
+                    mode === 'withdrawal'
+                      ? 'border-emerald-500 bg-emerald-50 ring-1 ring-emerald-200'
+                      : 'border-gray-200 bg-white hover:border-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Wallet className="h-5 w-5 text-emerald-600" />
+                    <p className="text-sm font-semibold text-gray-900">
+                      Pencairan Dana
+                    </p>
+                  </div>
+                  <p className="mt-2 text-sm text-gray-600">
+                    Ajukan pencairan saldo merchant ke rekening bank partner.
+                  </p>
+                </button>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <LayoutGrid className="h-5 w-5 text-blue-600" />
+                  <p className="mt-3 text-sm font-semibold text-gray-900">
+                    {mode === 'machine' ? 'Kategori Mesin' : 'Saldo Tersedia'}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-600">
+                    {mode === 'machine'
+                      ? 'Pilih antara vending machine atau locker laundry.'
+                      : balanceLoading
+                        ? 'Memuat saldo merchant...'
+                        : formatCurrency(availableBalance)}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                  {mode === 'machine' ? (
+                    <MapPin className="h-5 w-5 text-emerald-600" />
+                  ) : (
+                    <Landmark className="h-5 w-5 text-violet-600" />
+                  )}
+                  <p className="mt-3 text-sm font-semibold text-gray-900">
+                    {mode === 'machine' ? 'Lokasi Penempatan' : 'Pending Withdrawal'}
+                  </p>
+                  <p className="mt-1 text-xs text-gray-600">
+                    {mode === 'machine'
+                      ? 'Cantumkan alamat atau area penempatan mesin secara spesifik.'
+                      : balanceLoading
+                        ? 'Memuat data pencairan...'
+                        : formatCurrency(pendingWithdrawal)}
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+                  <CheckCircle2 className="h-5 w-5 text-amber-600" />
+                  <p className="mt-3 text-sm font-semibold text-gray-900">
+                    Status Awal
+                  </p>
+                  <p className="mt-1 text-xs text-gray-600">
+                    {mode === 'machine'
+                      ? 'Pengajuan baru akan tercatat dengan status pending.'
+                      : 'Permintaan pencairan akan diproses setelah diajukan.'}
+                  </p>
+                </div>
+              </div>
+
+              {balanceError && mode === 'withdrawal' && (
+                <div className="rounded-2xl border border-red-200 bg-red-50 p-4">
+                  <p className="text-sm text-red-700">{balanceError}</p>
+                </div>
+              )}
+
+              {feedback?.type === 'machine' && (
+                <div className="rounded-2xl border border-green-200 bg-green-50 p-4">
+                  <p className="text-sm font-semibold text-green-900">
+                    Pengajuan mesin berhasil dikirim.
+                  </p>
+                  <p className="mt-1 text-sm text-green-800">
+                    ID pengajuan: {feedback.submission.id}. Anda akan diarahkan ke
+                    halaman riwayat pengajuan dan withdrawal.
                   </p>
                 </div>
               )}
 
-              {/* Form Container */}
-              <div className="bg-white rounded-lg shadow p-4 md:p-6">
-                <form onSubmit={handleSubmit} className="space-y-6">
-                  {/* Form Section Title */}
-                  <h2 className="text-lg font-semibold text-gray-900">
-                    Form Pengajuan
-                  </h2>
+              {feedback?.type === 'withdrawal' && (
+                <div className="rounded-2xl border border-green-200 bg-green-50 p-4">
+                  <p className="text-sm font-semibold text-green-900">
+                    Pengajuan pencairan dana berhasil dikirim.
+                  </p>
+                  <p className="mt-1 text-sm text-green-800">
+                    Nominal yang diajukan: {formatCurrency(feedback.amount)}.
+                    Tim akan memproses pencairan sesuai data rekening yang Anda kirim.
+                  </p>
+                </div>
+              )}
 
-                  {/* Jenis Pengajuan */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Jenis Pengajuan
-                    </label>
-                    <select
-                      name="submissionType"
-                      value={formData.submissionType}
-                      onChange={handleInputChange}
-                      className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 appearance-none cursor-pointer bg-gray-50 ${
-                        errors.submissionType
-                          ? 'border-red-500 focus:ring-red-500'
-                          : 'border-gray-300 focus:ring-blue-500'
-                      }`}
-                    >
-                      {submissionTypes.map((type) => (
-                        <option key={type.value} value={type.value}>
-                          {type.label}
-                        </option>
-                      ))}
-                    </select>
-                    {errors.submissionType && (
-                      <p className="mt-1 text-sm text-red-500">
-                        {errors.submissionType}
-                      </p>
-                    )}
-                  </div>
-
-                  {/* FORM FOR TAMBAH MESIN BARU */}
-                  {formData.submissionType === 'add-machine' && (
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm md:p-6">
+                <form onSubmit={handleSubmit} className="space-y-5">
+                  {mode === 'machine' ? (
                     <>
-                      {/* Nama Mesin */}
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Nama Mesin
-                        </label>
-                        <input
-                          type="text"
-                          name="machineName"
-                          placeholder="Masukkan nama"
-                          value={formData.machineName}
-                          onChange={handleInputChange}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 bg-gray-50 ${
-                            errors.machineName
-                              ? 'border-red-500 focus:ring-red-500'
-                              : 'border-gray-300 focus:ring-blue-500'
-                          }`}
-                        />
-                        {errors.machineName && (
-                          <p className="mt-1 text-sm text-red-500">
-                            {errors.machineName}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Lokasi/Alamat */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Lokasi/Alamat
-                        </label>
-                        <input
-                          type="text"
-                          name="location"
-                          placeholder="Masukkan alamat"
-                          value={formData.location}
-                          onChange={handleInputChange}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 bg-gray-50 ${
-                            errors.location
-                              ? 'border-red-500 focus:ring-red-500'
-                              : 'border-gray-300 focus:ring-blue-500'
-                          }`}
-                        />
-                        {errors.location && (
-                          <p className="mt-1 text-sm text-red-500">
-                            {errors.location}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Kategori */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Kategori
+                        <label
+                          htmlFor="kategori_mesin"
+                          className="mb-2 block text-sm font-medium text-gray-700"
+                        >
+                          Kategori Mesin
                         </label>
                         <select
-                          name="category"
-                          value={formData.category}
-                          onChange={handleInputChange}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 appearance-none cursor-pointer bg-gray-50 ${
-                            errors.category
+                          id="kategori_mesin"
+                          name="kategori_mesin"
+                          value={machineForm.kategori_mesin}
+                          onChange={handleMachineInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.kategori_mesin
                               ? 'border-red-500 focus:ring-red-500'
                               : 'border-gray-300 focus:ring-blue-500'
                           }`}
                         >
-                          <option value="">Pilih kategori</option>
-                          {categories.map((cat) => (
-                            <option key={cat.value} value={cat.value}>
-                              {cat.label}
+                          {CATEGORY_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
                             </option>
                           ))}
                         </select>
-                        {errors.category && (
+                        <p className="mt-2 text-xs text-gray-500">
+                          {selectedCategoryDescription}
+                        </p>
+                        {errors.kategori_mesin && (
                           <p className="mt-1 text-sm text-red-500">
-                            {errors.category}
+                            {errors.kategori_mesin}
                           </p>
                         )}
                       </div>
 
-                      {/* Kapasitas */}
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Kapasitas
+                        <label
+                          htmlFor="lokasi"
+                          className="mb-2 block text-sm font-medium text-gray-700"
+                        >
+                          Lokasi
                         </label>
                         <input
+                          id="lokasi"
                           type="text"
-                          name="capacity"
-                          placeholder="Contoh: 50 slot"
-                          value={formData.capacity}
-                          onChange={handleInputChange}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 bg-gray-50 ${
-                            errors.capacity
+                          name="lokasi"
+                          placeholder="Contoh: Jalan Sudirman No. 123, Jakarta"
+                          value={machineForm.lokasi}
+                          onChange={handleMachineInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.lokasi
                               ? 'border-red-500 focus:ring-red-500'
                               : 'border-gray-300 focus:ring-blue-500'
                           }`}
                         />
-                        {errors.capacity && (
-                          <p className="mt-1 text-sm text-red-500">
-                            {errors.capacity}
-                          </p>
+                        {errors.lokasi && (
+                          <p className="mt-1 text-sm text-red-500">{errors.lokasi}</p>
                         )}
                       </div>
-                    </>
-                  )}
 
-                  {/* FORM FOR UPGRADE MESIN */}
-                  {formData.submissionType === 'upgrade-machine' && (
-                    <>
-                      {/* Pilih Mesin yang Ingin Di-upgrade */}
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Mesin yang Ingin Di-upgrade
-                        </label>
-                        <select
-                          name="existingMachineId"
-                          value={formData.existingMachineId}
-                          onChange={handleInputChange}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 appearance-none cursor-pointer bg-gray-50 ${
-                            errors.existingMachineId
-                              ? 'border-red-500 focus:ring-red-500'
-                              : 'border-gray-300 focus:ring-blue-500'
-                          }`}
+                        <label
+                          htmlFor="deskripsi"
+                          className="mb-2 block text-sm font-medium text-gray-700"
                         >
-                          <option value="">Pilih mesin</option>
-                          {existingMachines.map((machine) => (
-                            <option key={machine.id} value={machine.id}>
-                              {machine.name}
-                            </option>
-                          ))}
-                        </select>
-                        {errors.existingMachineId && (
-                          <p className="mt-1 text-sm text-red-500">
-                            {errors.existingMachineId}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* Kondisi Sekarang */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Kondisi Mesin Sekarang
+                          Deskripsi
                         </label>
                         <textarea
-                          name="currentCondition"
-                          placeholder="Jelaskan kondisi mesin saat ini..."
-                          value={formData.currentCondition}
-                          onChange={handleInputChange}
-                          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors resize-none text-gray-900 bg-gray-50"
-                          rows={3}
-                        />
-                      </div>
-
-                      {/* Tujuan Upgrade */}
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Tujuan Upgrade
-                        </label>
-                        <input
-                          type="text"
-                          name="upgradePurpose"
-                          placeholder="Contoh: Menambah kapasitas, Penggantian komponen"
-                          value={formData.upgradePurpose}
-                          onChange={handleInputChange}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 bg-gray-50 ${
-                            errors.upgradePurpose
+                          id="deskripsi"
+                          name="deskripsi"
+                          rows={5}
+                          placeholder="Jelaskan kebutuhan atau alasan pengajuan mesin."
+                          value={machineForm.deskripsi}
+                          onChange={handleMachineInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.deskripsi
                               ? 'border-red-500 focus:ring-red-500'
                               : 'border-gray-300 focus:ring-blue-500'
                           }`}
                         />
-                        {errors.upgradePurpose && (
+                        {errors.deskripsi && (
                           <p className="mt-1 text-sm text-red-500">
-                            {errors.upgradePurpose}
+                            {errors.deskripsi}
                           </p>
                         )}
                       </div>
                     </>
-                  )}
-
-                  {/* FORM FOR AJUKAN PENCAIRAN */}
-                  {formData.submissionType === 'withdrawal' && (
-                    <div className="space-y-4">
-                      <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
-                        <p className="text-xs text-blue-700">Saldo Digital</p>
-                        <p className="text-lg font-semibold text-blue-900">
-                          {formatCurrency(digitalBalance)}
+                  ) : (
+                    <>
+                      <div className="rounded-xl border border-blue-100 bg-blue-50 p-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-blue-700">
+                          Saldo Merchant
+                        </p>
+                        <p className="mt-2 text-lg font-semibold text-blue-900">
+                          {balanceLoading
+                            ? 'Memuat saldo...'
+                            : formatCurrency(availableBalance)}
+                        </p>
+                        <p className="mt-1 text-xs text-blue-700">
+                          Pending withdrawal: {formatCurrency(pendingWithdrawal)}
                         </p>
                       </div>
+
                       <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Jumlah Pencairan
+                        <label
+                          htmlFor="amount"
+                          className="mb-2 block text-sm font-medium text-gray-700"
+                        >
+                          Nominal Pencairan
                         </label>
                         <input
-                          type="number"
-                          name="withdrawalAmount"
+                          id="amount"
+                          type="text"
+                          name="amount"
+                          inputMode="numeric"
                           placeholder="Contoh: 1000000"
-                          value={formData.withdrawalAmount}
-                          onChange={handleInputChange}
-                          min={1}
-                          max={digitalBalance}
-                          className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors text-gray-900 bg-gray-50 ${
-                            errors.withdrawalAmount
+                          value={withdrawalForm.amount}
+                          onChange={handleWithdrawalInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.amount
                               ? 'border-red-500 focus:ring-red-500'
                               : 'border-gray-300 focus:ring-blue-500'
                           }`}
                         />
-                        <p className="mt-1 text-xs text-gray-500">
-                          Maksimal {formatCurrency(digitalBalance)}
+                        <p className="mt-2 text-xs text-gray-500">
+                          Maksimal pencairan saat ini {formatCurrency(availableBalance)}.
                         </p>
-                        {errors.withdrawalAmount && (
+                        {errors.amount && (
+                          <p className="mt-1 text-sm text-red-500">{errors.amount}</p>
+                        )}
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="bank_name"
+                          className="mb-2 block text-sm font-medium text-gray-700"
+                        >
+                          Nama Bank
+                        </label>
+                        <input
+                          id="bank_name"
+                          type="text"
+                          name="bank_name"
+                          placeholder="Contoh: BCA"
+                          value={withdrawalForm.bank_name}
+                          onChange={handleWithdrawalInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.bank_name
+                              ? 'border-red-500 focus:ring-red-500'
+                              : 'border-gray-300 focus:ring-blue-500'
+                          }`}
+                        />
+                        {errors.bank_name && (
                           <p className="mt-1 text-sm text-red-500">
-                            {errors.withdrawalAmount}
+                            {errors.bank_name}
                           </p>
                         )}
                       </div>
-                    </div>
-                  )}
 
-                  {/* Deskripsi (untuk tambah/upgrade) */}
-                  {formData.submissionType !== 'withdrawal' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Deskripsi
-                      </label>
-                      <textarea
-                        name="description"
-                        placeholder="Jelaskan detail pengajuan Anda"
-                        value={formData.description}
-                        onChange={handleInputChange}
-                        className={`w-full px-4 py-2.5 border rounded-lg focus:outline-none focus:ring-2 transition-colors resize-none text-gray-900 bg-gray-50 ${
-                          errors.description
-                            ? 'border-red-500 focus:ring-red-500'
-                            : 'border-gray-300 focus:ring-blue-500'
-                        }`}
-                        rows={4}
-                      />
-                      {errors.description && (
-                        <p className="mt-1 text-sm text-red-500">
-                          {errors.description}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* File Upload */}
-                  {formData.submissionType !== 'withdrawal' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Foto/Dokumen Pendukung
-                      </label>
-
-                      {!formData.uploadedFile ? (
-                        <div
-                          onDragEnter={handleDrag}
-                          onDragLeave={handleDrag}
-                          onDragOver={handleDrag}
-                          onDrop={handleDrop}
-                          className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
-                            dragActive
-                              ? 'border-blue-500 bg-blue-50'
-                              : 'border-gray-300 bg-gray-50'
-                          } ${errors.file ? 'border-red-500 bg-red-50' : ''}`}
+                      <div>
+                        <label
+                          htmlFor="bank_account_number"
+                          className="mb-2 block text-sm font-medium text-gray-700"
                         >
-                          <input
-                            type="file"
-                            accept=".png,.jpg,.jpeg,.pdf"
-                            onChange={handleFileChange}
-                            className="hidden"
-                            id="fileInput"
-                          />
-                          <label
-                            htmlFor="fileInput"
-                            className="cursor-pointer"
-                          >
-                            <Upload className="w-12 h-12 text-gray-400 mx-auto mb-2" />
-                            <p className="text-sm font-medium text-gray-900 mb-1">
-                              Klik untuk upload foto
-                            </p>
-                            <p className="text-xs text-gray-500">
-                              PNG, JPG hingga 5MB
-                            </p>
-                          </label>
-                        </div>
-                      ) : (
-                        <div className="border border-gray-300 rounded-lg p-4 bg-gray-50">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <Package className="w-8 h-8 text-blue-600" />
-                              <div className="text-left">
-                                <p className="text-sm font-medium text-gray-900">
-                                  {formData.uploadedFile.name}
-                                </p>
-                                <p className="text-xs text-gray-500">
-                                  {(formData.uploadedFile.size / 1024).toFixed(2)} KB
-                                </p>
-                              </div>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={removeFile}
-                              className="p-1 hover:bg-gray-200 rounded-lg transition-colors"
-                            >
-                              <X className="w-5 h-5 text-gray-600" />
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {errors.file && (
-                        <p className="mt-1 text-sm text-red-500">{errors.file}</p>
-                      )}
+                          Nomor Rekening
+                        </label>
+                        <input
+                          id="bank_account_number"
+                          type="text"
+                          name="bank_account_number"
+                          placeholder="Contoh: 1234567890"
+                          value={withdrawalForm.bank_account_number}
+                          onChange={handleWithdrawalInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.bank_account_number
+                              ? 'border-red-500 focus:ring-red-500'
+                              : 'border-gray-300 focus:ring-blue-500'
+                          }`}
+                        />
+                        {errors.bank_account_number && (
+                          <p className="mt-1 text-sm text-red-500">
+                            {errors.bank_account_number}
+                          </p>
+                        )}
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="bank_account_name"
+                          className="mb-2 block text-sm font-medium text-gray-700"
+                        >
+                          Nama Pemilik Rekening
+                        </label>
+                        <input
+                          id="bank_account_name"
+                          type="text"
+                          name="bank_account_name"
+                          placeholder="Contoh: PT Mitra Venjual"
+                          value={withdrawalForm.bank_account_name}
+                          onChange={handleWithdrawalInputChange}
+                          className={`w-full rounded-lg border bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 ${
+                            errors.bank_account_name
+                              ? 'border-red-500 focus:ring-red-500'
+                              : 'border-gray-300 focus:ring-blue-500'
+                          }`}
+                        />
+                        {errors.bank_account_name && (
+                          <p className="mt-1 text-sm text-red-500">
+                            {errors.bank_account_name}
+                          </p>
+                        )}
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="notes"
+                          className="mb-2 block text-sm font-medium text-gray-700"
+                        >
+                          Catatan
+                        </label>
+                        <textarea
+                          id="notes"
+                          name="notes"
+                          rows={4}
+                          placeholder="Catatan tambahan untuk pencairan dana."
+                          value={withdrawalForm.notes}
+                          onChange={handleWithdrawalInputChange}
+                          className="w-full rounded-lg border border-gray-300 bg-gray-50 px-4 py-3 text-gray-900 outline-none transition-colors focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {errors.submit && (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                      <p className="text-sm text-red-700">{errors.submit}</p>
                     </div>
                   )}
 
-                  {/* Submit Button */}
                   <button
                     type="submit"
-                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-black text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+                    disabled={submitting || (mode === 'withdrawal' && balanceLoading)}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-black px-6 py-3 font-medium text-white transition-colors hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-400"
                   >
-                    ⓘ Kirim Pengajuan
+                    {submitting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {mode === 'machine'
+                          ? 'Mengirim Pengajuan...'
+                          : 'Mengajukan Pencairan...'}
+                      </>
+                    ) : mode === 'machine' ? (
+                      'Kirim Pengajuan Mesin'
+                    ) : (
+                      'Ajukan Pencairan Dana'
+                    )}
                   </button>
                 </form>
               </div>

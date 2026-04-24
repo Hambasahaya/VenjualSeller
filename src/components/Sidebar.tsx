@@ -12,6 +12,7 @@ import {
   BarChart3,
   Send,
 } from 'lucide-react';
+import { logoutUser } from '@/lib/services';
 
 interface SidebarProps {
   active?:
@@ -26,6 +27,14 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ active = 'home' }: SidebarProps) {
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+    } finally {
+      window.location.replace('/auth/login');
+    }
+  };
+
   const navItems = [
     {
       id: 'home',
@@ -119,7 +128,11 @@ export default function Sidebar({ active = 'home' }: SidebarProps) {
             <ChevronDown className="w-4 h-4" />
           </button>
 
-          <button className="w-full mt-2 flex items-center gap-2 px-4 py-3 rounded-lg text-red-600 hover:bg-red-50 transition-colors text-sm font-medium">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full mt-2 flex items-center gap-2 px-4 py-3 rounded-lg text-red-600 hover:bg-red-50 transition-colors text-sm font-medium"
+          >
             <LogOut className="w-4 h-4" />
             Logout
           </button>

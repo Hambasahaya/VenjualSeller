@@ -1,20 +1,64 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import AuthLayout from '@/components/AuthLayout';
 import EmailInput from '@/components/EmailInput';
 import PasswordInput from '@/components/PasswordInput';
 import Checkbox from '@/components/Checkbox';
 import Button from '@/components/Button';
 import { Shield } from 'lucide-react';
+import { loginUser, ApiError } from '@/lib/services';
+import { useRedirectIfAuthenticated } from '@/lib/auth';
 
-export default function LoginPage() {
+function LoginPageFallback() {
+  return (
+    <AuthLayout
+      title="Partner Venjual"
+      subtitle="Portal Mitra - Kelola Bisnis Anda"
+      logo={
+        <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto">
+          <Shield className="w-10 h-10 text-blue-600" />
+        </div>
+      }
+    >
+      <div className="py-10 text-center">
+        <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600"></div>
+        <p className="mt-4 text-sm text-gray-600">Memuat halaman login...</p>
+      </div>
+    </AuthLayout>
+  );
+}
+
+function LoginPageContent() {
+  const searchParams = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [errors, setErrors] = useState<{ email?: string; password?: string; api?: string }>({});
+  const checkingSession = useRedirectIfAuthenticated('/dashboard');
+  const redirectTo = useMemo(() => {
+    const redirectPath = searchParams.get('redirect');
+    return redirectPath?.startsWith('/dashboard') ? redirectPath : '/dashboard';
+  }, [searchParams]);
+  const emailFromQuery = useMemo(() => searchParams.get('email')?.trim() ?? '', [searchParams]);
+  const emailVerified = searchParams.get('verified') === '1';
+  const [showVerificationHelp, setShowVerificationHelp] = useState(false);
+
+  useEffect(() => {
+    if (emailFromQuery) {
+      setEmail(emailFromQuery);
+      return;
+    }
+
+    const rememberedEmail = localStorage.getItem('remember_email');
+    if (rememberedEmail) {
+      setEmail(rememberedEmail);
+      setRememberMe(true);
+    }
+  }, [emailFromQuery]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,10 +77,28 @@ export default function LoginPage() {
     }
 
     setLoading(true);
+    setErrors({});
+    setShowVerificationHelp(false);
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      console.log({ email, password, rememberMe });
+      // Call login API
+      await loginUser({ email, password });
+      
+      // Store remember me preference
+      if (rememberMe) {
+        localStorage.setItem('remember_email', email);
+      } else {
+        localStorage.removeItem('remember_email');
+      }
+      
+      // Redirect to dashboard
+      window.location.replace(redirectTo);
+      return;
+    } catch (error) {
+      const apiError = error as ApiError;
+      setShowVerificationHelp(
+        /verif|verify|aktivasi|email.+belum/i.test(apiError.message || '')
+      );
+      setErrors({ api: apiError.message });
     } finally {
       setLoading(false);
     }
@@ -47,6 +109,21 @@ export default function LoginPage() {
       <Shield className="w-10 h-10 text-blue-600" />
     </div>
   );
+
+  if (checkingSession) {
+    return (
+      <AuthLayout
+        title="Partner Venjual"
+        subtitle="Portal Mitra - Kelola Bisnis Anda"
+        logo={logoComponent}
+      >
+        <div className="py-10 text-center">
+          <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600"></div>
+          <p className="mt-4 text-sm text-gray-600">Memeriksa sesi login...</p>
+        </div>
+      </AuthLayout>
+    );
+  }
 
   return (
     <AuthLayout
@@ -59,10 +136,37 @@ export default function LoginPage() {
           Login ke Akun Anda
         </h2>
 
+        {/* Error Message */}
+        {errors.api && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+            {errors.api}
+          </div>
+        )}
+
+        {emailVerified && (
+          <div className="p-3 bg-green-50 border border-green-200 rounded-lg text-green-700 text-sm">
+            Email berhasil diverifikasi. Silakan login menggunakan akun Anda.
+          </div>
+        )}
+
+        {showVerificationHelp && email.trim() && (
+          <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-blue-700 text-sm">
+            Akun Anda kemungkinan belum diverifikasi.
+            {' '}
+            <Link
+              href={`/auth/verify-email?email=${encodeURIComponent(email.trim())}`}
+              className="font-semibold underline underline-offset-2"
+            >
+              Buka halaman verifikasi email
+            </Link>
+          </div>
+        )}
+
         <EmailInput
           value={email}
           onChange={(e) => {
             setEmail(e.target.value);
+            setShowVerificationHelp(false);
             if (errors.email) {
               setErrors({ ...errors, email: '' });
             }
@@ -108,35 +212,14 @@ export default function LoginPage() {
         </Button>
       </form>
 
-      <div className="mt-8 pt-6 border-t border-gray-200">
-        <p className="text-center text-gray-600 text-sm mb-4">
-          Atau gunakan akun demo
-        </p>
-
-        <div className="space-y-3">
-          {[
-            { name: 'Pemilik Mitra Pesan', email: 'pemilik@venjual.com' },
-            { name: 'Penyedia Lokasi', email: 'lokasi@venjual.com' },
-            { name: 'Supplier Produk', email: 'supplier@venjual.com' },
-            { name: 'Partner Laundry', email: 'laundry@venjual.com' },
-          ].map((demo) => (
-            <div key={demo.email} className="text-sm">
-              <p className="font-medium text-gray-900">{demo.name}</p>
-              <p className="text-gray-500">{demo.email}</p>
-            </div>
-          ))}
-        </div>
-
-        <p className="mt-4 text-center text-xs text-gray-600">
-          Belum punya akun?{' '}
-          <Link
-            href="/auth/register"
-            className="text-blue-600 hover:text-blue-700 font-semibold"
-          >
-            Daftar sebagai Partner
-          </Link>
-        </p>
-      </div>
     </AuthLayout>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginPageFallback />}>
+      <LoginPageContent />
+    </Suspense>
   );
 }

@@ -42,7 +42,7 @@ export default function TextInput({
           onChange={onChange}
           placeholder={placeholder}
           disabled={disabled}
-          className={`w-full ${icon ? 'pl-10' : 'pl-4'} pr-4 py-2 bg-gray-50 border rounded-lg focus:outline-none focus:ring-2 transition-colors ${
+          className={`w-full ${icon ? 'pl-10' : 'pl-4'} pr-4 py-2 bg-gray-50 border rounded-lg text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 transition-colors ${
             error
               ? 'border-red-500 focus:ring-red-500'
               : 'border-gray-300 focus:ring-blue-500'

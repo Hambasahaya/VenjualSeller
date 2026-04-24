@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { ChevronDown, User, Bell, LogOut } from 'lucide-react';
+import { logoutUser } from '@/lib/services';
 
 interface HeaderProps {
   userName?: string;
@@ -45,6 +46,15 @@ export default function Header({
       document.removeEventListener('keydown', handleEscape);
     };
   }, []);
+
+  const handleLogout = async () => {
+    setMenuOpen(false);
+    try {
+      await logoutUser();
+    } finally {
+      window.location.replace('/auth/login');
+    }
+  };
 
   return (
     <header className="sticky top-0 z-40 bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 md:py-4 shadow-md">
@@ -126,7 +136,7 @@ export default function Header({
             <button
               type="button"
               role="menuitem"
-              onClick={() => setMenuOpen(false)}
+              onClick={handleLogout}
               className="w-full text-left flex items-center gap-2 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
             >
               <LogOut className="w-4 h-4 text-gray-500" />

@@ -5,7 +5,7 @@ import { MapPin, TrendingUp, AlertCircle } from 'lucide-react';
 
 export interface Transaction {
   id: string;
-  type: 'vending' | 'laundry' | 'space';
+  type: 'vending' | 'locker';
   name: string;
   location: string;
   address: string;
@@ -19,29 +19,35 @@ interface TransactionListProps {
   transactions: Transaction[];
 }
 
+type TransactionType = Transaction['type'];
+
 export default function TransactionList({ transactions }: TransactionListProps) {
-  const [activeTab, setActiveTab] = useState<'vending' | 'laundry' | 'space'>(
+  const [selectedTab, setSelectedTab] = useState<'vending' | 'locker'>(
     'vending'
   );
+  const vendingCount = transactions.filter((t) => t.type === 'vending').length;
+  const lockerCount = transactions.filter((t) => t.type === 'locker').length;
 
   const tabs = [
     {
       id: 'vending',
       label: 'Vending',
-      count: transactions.filter((t) => t.type === 'vending').length,
+      count: vendingCount,
     },
     {
-      id: 'laundry',
-      label: 'Laundry',
-      count: transactions.filter((t) => t.type === 'laundry').length,
-    },
-    {
-      id: 'space',
-      label: 'Space',
-      count: transactions.filter((t) => t.type === 'space').length,
+      id: 'locker',
+      label: 'Locker Laundry',
+      count: lockerCount,
     },
   ];
 
+  const selectedTabCount = selectedTab === 'vending' ? vendingCount : lockerCount;
+  const activeTab =
+    selectedTabCount > 0 || transactions.length === 0
+      ? selectedTab
+      : vendingCount > 0
+        ? 'vending'
+        : 'locker';
   const filtered = transactions.filter((t) => t.type === activeTab);
 
   return (
@@ -56,7 +62,7 @@ export default function TransactionList({ transactions }: TransactionListProps) 
           {tabs.map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as any)}
+              onClick={() => setSelectedTab(tab.id as TransactionType)}
               className={`pb-2 px-2 md:px-4 text-xs md:text-sm font-medium whitespace-nowrap transition-colors ${
                 activeTab === tab.id
                   ? 'text-blue-600 border-b-2 border-blue-600'

@@ -6,7 +6,9 @@ import { MapPin, DollarSign, TrendingUp, Zap, Package } from 'lucide-react';
 
 export interface Machine {
   id: string;
-  type: 'vending' | 'laundry' | 'space';
+  routeId?: string;
+  type: 'vending' | 'locker';
+  machineTypeLabel?: string;
   name: string;
   location: string;
   address: string;
@@ -41,9 +43,7 @@ export default function MachineCard({ machine }: MachineCardProps) {
     switch (type) {
       case 'vending':
         return '🤖';
-      case 'laundry':
-        return '🧺';
-      case 'space':
+      case 'locker':
         return '🏢';
       default:
         return '📦';
@@ -63,7 +63,7 @@ export default function MachineCard({ machine }: MachineCardProps) {
         <div className="flex items-start justify-between mb-3">
           <div className="flex-1">
             <h3 className="font-semibold text-gray-900 text-sm">
-              📦 {machine.id}
+              📦 {machine.machineTypeLabel || machine.id}
             </h3>
             <p className="text-xs text-gray-600 mt-1">{machine.name}</p>
           </div>
@@ -131,7 +131,7 @@ export default function MachineCard({ machine }: MachineCardProps) {
 
         {/* Detail Button */}
         <button 
-          onClick={() => router.push(`/dashboard/mesin/${machine.id}`)}
+          onClick={() => router.push(`/dashboard/mesin/${machine.routeId || machine.id}`)}
           className="w-full py-2 border border-blue-600 text-blue-600 rounded-lg hover:bg-blue-50 transition-colors text-sm font-medium"
         >
           ⓘ Lihat Detail

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
@@ -16,14 +16,50 @@ import {
   Pencil,
   FileText,
 } from 'lucide-react';
+import {
+  getCurrentUserProfile,
+  logoutUser,
+  ApiError,
+  User as UserType,
+} from '@/lib/services';
 
 export default function AccountPage() {
+  const [profile, setProfile] = useState<UserType | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+
+  useEffect(() => {
+    const fetchProfile = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        const userProfile = await getCurrentUserProfile();
+        setProfile(userProfile);
+      } catch (err) {
+        const apiError = err as ApiError;
+        setError(apiError.message);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchProfile();
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await logoutUser();
+    } finally {
+      window.location.replace('/auth/login');
+    }
+  };
+
   return (
     <div className="flex h-screen bg-gray-50">
       <Sidebar active="account" />
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <Header userName="Ahmad Wijaya" userEmail="ahmad.wijaya@email.com" />
+        <Header userName={profile?.full_name || profile?.username || 'Partner'} userEmail={profile?.email} />
 
         <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
           <div className="p-4 md:p-6">
@@ -34,14 +70,33 @@ export default function AccountPage() {
                 </h1>
               </div>
 
+              {/* Error Message */}
+              {error && (
+                <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                  {error}
+                </div>
+              )}
+
+              {/* Loading State */}
+              {loading && (
+                <div className="flex items-center justify-center h-64">
+                  <div className="text-center">
+                    <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600"></div>
+                    <p className="mt-4 text-gray-600">Memuat profil...</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Profile Card */}
+              {!loading && profile && (
               <div className="bg-white rounded-2xl shadow p-5 md:p-6 mb-4 border border-gray-100">
                 <div className="flex flex-col items-center text-center pb-4 border-b border-gray-100">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center mb-3">
                     <User className="w-10 h-10 text-white" />
                   </div>
-                  <h2 className="text-lg font-bold text-gray-900">Ahmad Wijaya</h2>
-                  <p className="text-sm text-gray-500">Pemilik Mesin Pintar</p>
-                  <p className="text-xs text-gray-400 mt-1">ID: MV-2024-0123</p>
+                  <h2 className="text-lg font-bold text-gray-900">{profile.full_name || profile.username}</h2>
+                  <p className="text-sm text-gray-500">Partner Venjual</p>
+                  <p className="text-xs text-gray-400 mt-1">ID: {profile.id}</p>
                 </div>
 
                 <div className="divide-y divide-gray-100">
@@ -49,39 +104,40 @@ export default function AccountPage() {
                     <Mail className="w-4 h-4 text-gray-400 mt-1" />
                     <div>
                       <p className="text-xs text-gray-500">Email</p>
-                      <p className="text-sm text-gray-900">ahmad.wijaya@email.com</p>
+                      <p className="text-sm text-gray-900">{profile.email}</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 py-3">
                     <Phone className="w-4 h-4 text-gray-400 mt-1" />
                     <div>
                       <p className="text-xs text-gray-500">Nomor Telepon</p>
-                      <p className="text-sm text-gray-900">+62 812-3456-7890</p>
+                      <p className="text-sm text-gray-900">{profile.phone || '-'}</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 py-3">
                     <MapPin className="w-4 h-4 text-gray-400 mt-1" />
                     <div>
                       <p className="text-xs text-gray-500">Alamat</p>
-                      <p className="text-sm text-gray-900">Jl. Sudirman No. 123, Jakarta Selatan</p>
+                      <p className="text-sm text-gray-900">{profile.address || '-'}</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 py-3">
                     <Building2 className="w-4 h-4 text-gray-400 mt-1" />
                     <div>
-                      <p className="text-xs text-gray-500">Perusahaan</p>
-                      <p className="text-sm text-gray-900">PT. Mitra Venjual Indonesia</p>
+                      <p className="text-xs text-gray-500">Kota</p>
+                      <p className="text-sm text-gray-900">{profile.city || '-'}</p>
                     </div>
                   </div>
                   <div className="flex items-start gap-3 py-3">
                     <Calendar className="w-4 h-4 text-gray-400 mt-1" />
                     <div>
                       <p className="text-xs text-gray-500">Bergabung Sejak</p>
-                      <p className="text-sm text-gray-900">15 Januari 2024</p>
+                      <p className="text-sm text-gray-900">{new Date(profile.created_at).toLocaleDateString('id-ID')}</p>
                     </div>
                   </div>
                 </div>
               </div>
+              )}
 
               <div className="space-y-3">
                 <Link
@@ -91,11 +147,18 @@ export default function AccountPage() {
                   <FileText className="w-4 h-4" />
                   Pengajuan Saya
                 </Link>
-                <button className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white border border-gray-200 rounded-lg text-gray-900 hover:bg-gray-50 transition-colors">
+                <Link
+                  href="/dashboard/account/edit"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white border border-gray-200 rounded-lg text-gray-900 hover:bg-gray-50 transition-colors"
+                >
                   <Pencil className="w-4 h-4" />
                   Edit Profil
-                </button>
-                <button className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors">
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white border border-gray-200 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+                >
                   <LogOut className="w-4 h-4" />
                   Keluar
                 </button>

@@ -1,16 +1,50 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import Sidebar from '@/components/Sidebar';
-import { Calendar, TrendingUp, MapPin, Package } from 'lucide-react';
+import { Calendar, TrendingUp, MapPin, Package, Loader2 } from 'lucide-react';
+import { getCurrentMerchantTransactionSummary, TransactionSummary } from '@/lib/services/merchant';
+import { ApiError } from '@/lib/services/api';
+import {
+  getCurrentMerchantDailySales,
+  getCurrentMerchantTopLocations,
+  getCurrentMerchantTopProducts,
+  DailySale,
+  TopLocation,
+  TopProduct,
+} from '@/lib/services';
+
+function emptySummary(): TransactionSummary {
+  return {
+    merchant_id: '',
+    total_transactions: 0,
+    total_amount: 0,
+    completed_transactions: 0,
+    completed_amount: 0,
+    pending_transactions: 0,
+    pending_amount: 0,
+    failed_transactions: 0,
+    failed_amount: 0,
+    average_transaction: 0,
+    period: '',
+  };
+}
+
+async function safeFetch<T>(request: Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await request;
+  } catch {
+    return fallback;
+  }
+}
 
 interface LocationData {
   rank: number;
   name: string;
   transactions: number;
-  amount: string;
+  amount: number;
   growth: string;
 }
 
@@ -18,110 +52,133 @@ interface ProductData {
   rank: number;
   name: string;
   sold: number;
-  amount: string;
+  amount: number;
   growth: string;
 }
 
+function formatCompactCurrency(value: number) {
+  if (value >= 1000000) {
+    return `Rp ${(value / 1000000).toLocaleString('id-ID', {
+      maximumFractionDigits: 1,
+    })} Jt`;
+  }
+
+  return `Rp ${value.toLocaleString('id-ID')}`;
+}
+
+function toNumber(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  return 0;
+}
+
+function mapLocation(location: TopLocation, index: number): LocationData {
+  return {
+    rank: location.rank ?? index + 1,
+    name: location.location_name || location.name || location.address || '-',
+    transactions: toNumber(location.total_transactions ?? location.transactions),
+    amount: toNumber(location.total_amount ?? location.amount),
+    growth:
+      location.growth !== undefined && location.growth !== ''
+        ? String(location.growth)
+        : '-',
+  };
+}
+
+function mapProduct(product: TopProduct, index: number): ProductData {
+  return {
+    rank: product.rank ?? index + 1,
+    name: product.product_name || product.name || '-',
+    sold: toNumber(product.total_sold ?? product.sold ?? product.transactions),
+    amount: toNumber(product.total_amount ?? product.amount),
+    growth:
+      product.growth !== undefined && product.growth !== ''
+        ? String(product.growth)
+        : '-',
+  };
+}
+
 export default function AnalisisPage() {
-  const [startDate, setStartDate] = useState('2026-01-01');
-  const [endDate, setEndDate] = useState('2026-01-31');
-  const [activeCategory, setActiveCategory] = useState<'vending' | 'laundry' | 'space' | 'pelanggan'>('vending');
+  type CategoryId = 'vending' | 'locker' | 'pelanggan';
+  const [startDate, setStartDate] = useState('2026-04-01');
+  const [endDate, setEndDate] = useState('2026-04-21');
+  const [activeCategory, setActiveCategory] = useState<CategoryId>('vending');
+  const [summary, setSummary] = useState<TransactionSummary | null>(null);
+  const [topLocations, setTopLocations] = useState<LocationData[]>([]);
+  const [topProducts, setTopProducts] = useState<ProductData[]>([]);
+  const [dailySalesData, setDailySalesData] = useState<DailySale[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
 
-  // Mock data for top locations
-  const topLocations: LocationData[] = [
-    {
-      rank: 1,
-      name: 'Bandara Soekarno-Hatta T3',
-      transactions: 155,
-      amount: 'Rp 4,2 Jt',
-      growth: '+12%',
-    },
-    {
-      rank: 2,
-      name: 'Plaza Indonesia Lt. 2',
-      transactions: 142,
-      amount: 'Rp 3,8 Jt',
-      growth: '+12%',
-    },
-    {
-      rank: 3,
-      name: 'Stadion MRT Bundaran HI',
-      transactions: 128,
-      amount: 'Rp 3,5 Jt',
-      growth: '+12%',
-    },
-    {
-      rank: 4,
-      name: 'Grand Indonesia Lt. I',
-      transactions: 104,
-      amount: 'Rp 2,9 Jt',
-      growth: '+12%',
-    },
-    {
-      rank: 5,
-      name: 'Mall Taman Anggrek Lt. 3',
-      transactions: 87,
-      amount: 'Rp 2,4 Jt',
-      growth: '+12%',
-    },
-  ];
+  const machineTypeCode =
+    activeCategory === 'vending'
+      ? 'VMJ'
+      : activeCategory === 'locker'
+          ? 'LOCKERLOUNDRY'
+          : undefined;
 
-  // Mock data for top products
-  const topProducts: ProductData[] = [
-    {
-      rank: 1,
-      name: 'Minuman Energi',
-      sold: 342,
-      amount: 'Rp 5,1 Jt',
-      growth: '+18%',
-    },
-    {
-      rank: 2,
-      name: 'Snack Ringan',
-      sold: 298,
-      amount: 'Rp 4,2 Jt',
-      growth: '+14%',
-    },
-    {
-      rank: 3,
-      name: 'Kopi Instan',
-      sold: 267,
-      amount: 'Rp 3,8 Jt',
-      growth: '+10%',
-    },
-    {
-      rank: 4,
-      name: 'Roti & Pastry',
-      sold: 156,
-      amount: 'Rp 2,8 Jt',
-      growth: '+8%',
-    },
-    {
-      rank: 5,
-      name: 'Permen & Coklat',
-      sold: 142,
-      amount: 'Rp 2,1 Jt',
-      growth: '+5%',
-    },
-  ];
+  const analyticsParams = useMemo(
+    () => ({
+      date_from: startDate,
+      date_to: endDate,
+      ...(machineTypeCode ? { machine_type_code: machineTypeCode } : {}),
+    }),
+    [endDate, machineTypeCode, startDate]
+  );
 
-  // Mock data for daily sales
-  const dailySalesData = [
-    { date: '1 Jan', amount: 1200000 },
-    { date: '5 Jan', amount: 1800000 },
-    { date: '10 Jan', amount: 2100000 },
-    { date: '15 Jan', amount: 1900000 },
-    { date: '20 Jan', amount: 2400000 },
-    { date: '25 Jan', amount: 2200000 },
-    { date: '31 Jan', amount: 2800000 },
-  ];
+  // Fetch analytics data whenever filters change.
+  useEffect(() => {
+    const fetchAnalytics = async () => {
+      try {
+        setLoading(true);
+        setError('');
+        const [summaryData, locationData, productData, salesData] =
+          await Promise.all([
+            safeFetch(
+              getCurrentMerchantTransactionSummary(analyticsParams),
+              emptySummary()
+            ),
+            safeFetch(
+              getCurrentMerchantTopLocations({ ...analyticsParams, limit: 10 }),
+              []
+            ),
+            safeFetch(
+              getCurrentMerchantTopProducts({ ...analyticsParams, limit: 10 }),
+              []
+            ),
+            safeFetch(getCurrentMerchantDailySales(analyticsParams), []),
+          ]);
 
-  const maxAmount = Math.max(...dailySalesData.map((d) => d.amount));
+        setSummary(summaryData);
+        setTopLocations(locationData.map(mapLocation));
+        setTopProducts(productData.map(mapProduct));
+        setDailySalesData(salesData);
+      } catch (err) {
+        const apiError = err as ApiError;
+        setError(apiError.message || 'Gagal memuat data analisa');
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const categories = [
-    { id: 'vending', label: 'Venjual' },
-    { id: 'laundry', label: 'Laundry' },
-    { id: 'space', label: 'Space' },
+    fetchAnalytics();
+  }, [analyticsParams]);
+
+  const maxAmount = Math.max(
+    1,
+    ...dailySalesData.map((d) => toNumber(d.total_amount ?? d.amount))
+  );
+
+  const categories: Array<{ id: CategoryId; label: string }> = [
+    { id: 'vending', label: 'Vending Machine' },
+    { id: 'locker', label: 'Locker Laundry' },
     { id: 'pelanggan', label: 'Pelanggan' },
   ];
 
@@ -145,55 +202,97 @@ export default function AnalisisPage() {
                 </p>
               </div>
 
-              {/* Filter Periode */}
-              <div className="bg-white rounded-lg shadow p-4 md:p-6 mb-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">
-                  Filter Periode
-                </h2>
+              {/* Loading State */}
+              {loading && (
+                <div className="flex flex-col items-center justify-center py-12">
+                  <Loader2 className="w-8 h-8 text-blue-600 animate-spin mb-3" />
+                  <p className="text-gray-600">Memuat data analisa...</p>
+                </div>
+              )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      <Calendar className="w-4 h-4 inline mr-2" />
-                      Tanggal Mulai
-                    </label>
-                    <input
-                      type="date"
-                      value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
+              {/* Error State */}
+              {error && !loading && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+                  <p className="text-red-800 text-sm">{error}</p>
+                </div>
+              )}
+
+              {/* Summary Stats */}
+              {!loading && summary && (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                  <div className="bg-white rounded-lg shadow p-4">
+                    <p className="text-xs text-gray-500 mb-1">Total Transaksi</p>
+                    <p className="text-2xl font-bold text-gray-900">{summary.total_transactions}</p>
+                    <p className="text-xs text-gray-500 mt-2">Transaksi berhasil</p>
                   </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      <Calendar className="w-4 h-4 inline mr-2" />
-                      Tanggal Akhir
-                    </label>
-                    <input
-                      type="date"
-                      value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
+                  <div className="bg-white rounded-lg shadow p-4">
+                    <p className="text-xs text-gray-500 mb-1">Total Pendapatan</p>
+                    <p className="text-2xl font-bold text-green-600">Rp {summary.total_amount.toLocaleString('id-ID')}</p>
+                    <p className="text-xs text-gray-500 mt-2">Dari semua transaksi</p>
+                  </div>
+                  <div className="bg-white rounded-lg shadow p-4">
+                    <p className="text-xs text-gray-500 mb-1">Transaksi Berhasil</p>
+                    <p className="text-2xl font-bold text-blue-600">{summary.completed_transactions}</p>
+                    <p className="text-xs text-gray-500 mt-2">Status completed</p>
+                  </div>
+                  <div className="bg-white rounded-lg shadow p-4">
+                    <p className="text-xs text-gray-500 mb-1">Rata-rata Transaksi</p>
+                    <p className="text-2xl font-bold text-purple-600">Rp {Math.round(summary.average_transaction).toLocaleString('id-ID')}</p>
+                    <p className="text-xs text-gray-500 mt-2">Per transaksi</p>
                   </div>
                 </div>
+              )}
 
-                <div className="bg-blue-50 rounded-lg p-3 text-center">
-                  <p className="text-sm text-blue-700 font-medium">
-                    {startDate} - {endDate}
-                  </p>
-                </div>
-              </div>
+              {!loading && !error && (
+                <>
+                  <div className="bg-white rounded-lg shadow p-4 md:p-6 mb-6">
+                    <h2 className="text-lg font-semibold text-gray-900 mb-4">
+                      Filter Periode
+                    </h2>
 
-              {/* Category Tabs */}
-              <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.id}
-                    onClick={() => setActiveCategory(cat.id as any)}
-                    className={`px-4 py-2 rounded-lg whitespace-nowrap font-medium transition-colors text-sm ${
-                      activeCategory === cat.id
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          <Calendar className="w-4 h-4 inline mr-2" />
+                          Tanggal Mulai
+                        </label>
+                        <input
+                          type="date"
+                          value={startDate}
+                          onChange={(e) => setStartDate(e.target.value)}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          <Calendar className="w-4 h-4 inline mr-2" />
+                          Tanggal Akhir
+                        </label>
+                        <input
+                          type="date"
+                          value={endDate}
+                          onChange={(e) => setEndDate(e.target.value)}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bg-blue-50 rounded-lg p-3 text-center">
+                      <p className="text-sm text-blue-700 font-medium">
+                        {startDate} - {endDate}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Category Tabs */}
+                  <div className="flex gap-2 mb-6 overflow-x-auto pb-2">
+                    {categories.map((cat) => (
+                      <button
+                        key={cat.id}
+                        onClick={() => setActiveCategory(cat.id)}
+                        className={`px-4 py-2 rounded-lg whitespace-nowrap font-medium transition-colors text-sm ${
+                          activeCategory === cat.id
                         ? 'bg-blue-600 text-white'
                         : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
                     }`}
@@ -213,6 +312,11 @@ export default function AnalisisPage() {
                 </div>
 
                 <div className="space-y-3">
+                  {topLocations.length === 0 && (
+                    <p className="text-sm text-gray-500">
+                      Belum ada data lokasi untuk periode ini.
+                    </p>
+                  )}
                   {topLocations.map((location) => (
                     <div
                       key={location.rank}
@@ -237,7 +341,7 @@ export default function AnalisisPage() {
 
                       <div className="text-right">
                         <p className="font-bold text-gray-900 text-sm md:text-base">
-                          {location.amount}
+                          {formatCompactCurrency(location.amount)}
                         </p>
                         <p className="text-xs text-green-600 font-medium">
                           {location.growth}
@@ -258,6 +362,11 @@ export default function AnalisisPage() {
                 </div>
 
                 <div className="space-y-3">
+                  {topProducts.length === 0 && (
+                    <p className="text-sm text-gray-500">
+                      Belum ada data produk untuk periode ini.
+                    </p>
+                  )}
                   {topProducts.map((product) => (
                     <div
                       key={product.rank}
@@ -282,7 +391,7 @@ export default function AnalisisPage() {
 
                       <div className="text-right">
                         <p className="font-bold text-gray-900 text-sm md:text-base">
-                          {product.amount}
+                          {formatCompactCurrency(product.amount)}
                         </p>
                         <p className="text-xs text-green-600 font-medium">
                           {product.growth}
@@ -303,7 +412,15 @@ export default function AnalisisPage() {
                 </div>
 
                 <div className="h-64 flex items-end justify-around gap-2 p-4 bg-gray-50 rounded-lg">
-                  {dailySalesData.map((data, idx) => (
+                  {dailySalesData.length === 0 && (
+                    <p className="self-center text-sm text-gray-500">
+                      Belum ada data penjualan harian.
+                    </p>
+                  )}
+                  {dailySalesData.map((data, idx) => {
+                    const amount = toNumber(data.total_amount ?? data.amount);
+
+                    return (
                     <div
                       key={idx}
                       className="flex flex-col items-center gap-2 flex-1"
@@ -311,39 +428,55 @@ export default function AnalisisPage() {
                       <div
                         className="w-full bg-gradient-to-t from-purple-500 to-purple-400 rounded-t-lg transition-all hover:from-purple-600 hover:to-purple-500 cursor-pointer"
                         style={{
-                          height: `${(data.amount / maxAmount) * 100}%`,
+                          height: `${(amount / maxAmount) * 100}%`,
                           minHeight: '20px',
                         }}
-                        title={`Rp ${(data.amount / 1000000).toFixed(1)}Jt`}
+                        title={formatCompactCurrency(amount)}
                       />
                       <p className="text-xs text-gray-600 text-center">
                         {data.date}
                       </p>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="mt-4 grid grid-cols-3 gap-4 text-center">
                   <div className="p-3 bg-blue-50 rounded-lg">
                     <p className="text-xs text-gray-600 mb-1">Total</p>
                     <p className="font-bold text-blue-600">
-                      Rp {(dailySalesData.reduce((sum, d) => sum + d.amount, 0) / 1000000).toFixed(1)}Jt
+                      {formatCompactCurrency(
+                        dailySalesData.reduce(
+                          (sum, d) => sum + toNumber(d.total_amount ?? d.amount),
+                          0
+                        )
+                      )}
                     </p>
                   </div>
                   <div className="p-3 bg-green-50 rounded-lg">
                     <p className="text-xs text-gray-600 mb-1">Rata-rata</p>
                     <p className="font-bold text-green-600">
-                      Rp {(dailySalesData.reduce((sum, d) => sum + d.amount, 0) / dailySalesData.length / 1000000).toFixed(1)}Jt
+                      {formatCompactCurrency(
+                        dailySalesData.length > 0
+                          ? dailySalesData.reduce(
+                              (sum, d) =>
+                                sum + toNumber(d.total_amount ?? d.amount),
+                              0
+                            ) / dailySalesData.length
+                          : 0
+                      )}
                     </p>
                   </div>
                   <div className="p-3 bg-purple-50 rounded-lg">
                     <p className="text-xs text-gray-600 mb-1">Tertinggi</p>
                     <p className="font-bold text-purple-600">
-                      Rp {(maxAmount / 1000000).toFixed(1)}Jt
+                      {formatCompactCurrency(maxAmount)}
                     </p>
                   </div>
                 </div>
               </div>
+              </>
+              )}
             </div>
           </div>
         </div>
